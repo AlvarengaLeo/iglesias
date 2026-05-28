@@ -1,26 +1,39 @@
 import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { resolve } from 'path';
 
-// Phase 0 Vite config — keeps the existing classic-script HTML working as-is.
-// The current entry points (Sistema de Iglesia.html, Sistema de Iglesia-print.html)
-// load React via local UMD scripts (react.js, react-dom.js). Vite serves them as
-// static assets; no transformation needed yet. JSX bundling kicks in during Fase 4
-// when we add src/main.jsx as a <script type="module">.
+// Entry principal: index.html via Vite + React + ESM.
+// Entry secundario: Sistema de Iglesia-print.html (página separada para PDF stacked
+// que sigue usando classic scripts UMD desde /react.js, /react-dom.js, /components.js,
+// /screens/*.js, /app-print.js — funcionará hasta que migremos también el print).
+//
+// NOTA: forzamos resolve.alias react → node_modules/react para que el nuevo entry
+// NO confunda el react.js UMD del root con la versión ESM de npm.
 
 export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      react:       resolve(__dirname, 'node_modules/react'),
+      'react-dom': resolve(__dirname, 'node_modules/react-dom'),
+    },
+  },
+  optimizeDeps: {
+    // Forzar el pre-bundling desde node_modules
+    include: ['react', 'react-dom', 'react-dom/client', '@supabase/supabase-js'],
+  },
   server: {
     port: 5173,
     strictPort: true,
-    open: '/Sistema de Iglesia.html',
   },
   build: {
     rollupOptions: {
       input: {
-        main: 'Sistema de Iglesia.html',
-        print: 'Sistema de Iglesia-print.html',
+        main:  resolve(__dirname, 'index.html'),
+        print: resolve(__dirname, 'Sistema de Iglesia-print.html'),
       },
     },
     outDir: 'dist',
     emptyOutDir: true,
   },
-  // Phase 4+ will add @vitejs/plugin-react and src/ aliases
 });
