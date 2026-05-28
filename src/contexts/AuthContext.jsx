@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase.js';
 
 const AuthContext = createContext(null);
@@ -6,6 +6,9 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Flag para distinguir logout manual del usuario vs SIGNED_OUT espurio
+  // disparado por clock skew / rate limit / refresh fallido.
+  const manualLogoutRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -28,13 +31,19 @@ export function AuthProvider({ children }) {
       setLoading(false);
     });
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
-      // SIGNED_OUT que llega durante un TOKEN_REFRESHED fallido es transitorio:
-      // si todavía hay sesión válida en storage, no lo propagamos para evitar
-      // que el AuthGuard pateé al usuario al login a mitad de navegación.
+      // Defensa contra logouts espurios cuando el cliente tiene clock skew
+      // o cuando Supabase rate-limita el refresh: NO procesamos SIGNED_OUT
+      // a menos que el usuario explícitamente hizo signOut() (manualLogoutRef).
       if (event === 'SIGNED_OUT' && !s) {
-        // Doble check antes de propagar — pregunta una vez más a Supabase.
+        if (manualLogoutRef.current) {
+          manualLogoutRef.current = false;
+          setSession(null);
+          return;
+        }
+        console.warn('[supabase auth] SIGNED_OUT espurio ignorado (no fue acción del usuario). Posiblemente clock skew o rate limit del refresh.');
+        // Verificamos storage por si todavía hay sesión utilizable
         supabase.auth.getSession().then(({ data }) => {
-          if (mounted) setSession(data.session ?? null);
+          if (mounted && data.session) setSession(data.session);
         });
         return;
       }
@@ -62,6 +71,9 @@ export function AuthProvider({ children }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    // Marcar que ESTE logout es intencional del usuario, para que
+    // onAuthStateChange propague el SIGNED_OUT en lugar de filtrarlo.
+    manualLogoutRef.current = true;
     return supabase.auth.signOut();
   }, []);
 
