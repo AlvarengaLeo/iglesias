@@ -1,0 +1,149 @@
+/* ============================================
+   Polish — Fase 11
+   Loading, empty states, focus rings,
+   button states, confirm dialog, accessibility
+   ============================================ */
+
+@keyframes sk-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Disabled button consistency */
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+.btn:disabled:hover {
+  background: inherit;
+}
+
+/* Empty state */
+.empty-state {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.empty-state-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: var(--bg-2);
+  color: var(--muted);
+  display: inline-grid;
+  place-items: center;
+  margin-bottom: 16px;
+}
+
+.empty-state-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.empty-state-desc {
+  font-size: 12px;
+  line-height: 1.55;
+  max-width: 320px;
+  margin: 0 auto 16px;
+}
+
+/* Form validation hint */
+.field .error {
+  color: var(--error);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* Active state for chip filters */
+.chip.active {
+  background: var(--coffee-bg);
+  color: var(--coffee);
+  border-color: transparent;
+}
+
+/* Toggle visual states */
+.toggle {
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s;
+  border: none;
+  padding: 0;
+  display: inline-block;
+}
+
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.15s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.toggle.on {
+  background: var(--coffee);
+}
+
+.toggle.on::after {
+  left: 18px;
+}
+
+.toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Banner variants */
+.banner {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-2);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.banner.info {
+  background: var(--info-bg);
+  border: 1px solid #D0DBEB;
+  color: #345078;
+}
+
+.banner.warning {
+  background: var(--warning-bg);
+  border: 1px solid #F0DCC2;
+  color: #856630;
+}
+
+.banner.success {
+  background: var(--success-bg);
+  border: 1px solid #C7DDD0;
+  color: #2D6B4D;
+}
+
+/* Page header on permission-denied / disabled context */
+.permission-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 0;
+}
+
+/* Confirm dialog use native window.confirm() throughout; no extra CSS */

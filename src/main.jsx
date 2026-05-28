@@ -4,6 +4,7 @@ import { AuthProvider } from './contexts/AuthContext.jsx';
 import { ChurchProvider } from './contexts/ChurchContext.jsx';
 import { App } from './App.jsx';
 import './styles/auth.css';
+import './styles/polish.css';
 
 const root = createRoot(document.getElementById('root'));
 root.render(
