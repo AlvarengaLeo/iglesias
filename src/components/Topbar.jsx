@@ -24,19 +24,9 @@ const roleLabel = (role) => {
   }[role] || role || '';
 };
 
-const churchInitials = (name) => {
-  if (!name) return '··';
-  return name
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0].toUpperCase())
-    .join('');
-};
-
 export function Topbar({ title, subtitle, onMenuClick }) {
   const { user, signOut } = useAuth();
-  const { church, role } = useChurch();
+  const { role } = useChurch();
   const [userOpen, setUserOpen] = useState(false);
   const dropRef = useRef(null);
 
@@ -56,7 +46,6 @@ export function Topbar({ title, subtitle, onMenuClick }) {
     user?.email?.split('@')[0] ||
     'Usuario';
   const avatar = initials(user?.user_metadata?.full_name || user?.email);
-  const churchName = church?.legal_name || church?.public_name || '';
 
   return (
     <header className="topbar">
@@ -72,19 +61,9 @@ export function Topbar({ title, subtitle, onMenuClick }) {
         {subtitle && <span>{subtitle}</span>}
       </div>
       <div className="topbar-right">
-        {churchName && (
-          <div className="topbar-church">
-            <div className="ch-mark">{churchInitials(church?.public_name)}</div>
-            <div className="ch-name">{churchName}</div>
-            <Icon name="chevronDown" size={14} />
-          </div>
-        )}
         <button className="icon-btn" title="Notificaciones">
           <Icon name="bell" />
           <span className="dot"></span>
-        </button>
-        <button className="icon-btn" title="Ayuda">
-          <Icon name="help" />
         </button>
         <div style={{ position: 'relative' }} ref={dropRef}>
           <button className="topbar-user" onClick={() => setUserOpen((o) => !o)}>
