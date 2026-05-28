@@ -32,6 +32,7 @@ import {
   FOLLOWUP_TYPE_ICON,
   FOLLOWUP_TYPE_TONE,
 } from '../api/followups.js';
+import { exportPeopleToExcel } from '../lib/exportExcel.js';
 import { formatDate, formatRelativeTime } from '../lib/formatters.js';
 
 const FILTERS = ['Todos', 'Miembros', 'Visitantes', 'Donantes', 'Servidores', 'Líderes', 'Inactivos'];
@@ -49,6 +50,7 @@ export function PersonasScreen({ onToast }) {
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(null); // person object from list
   const [showAddModal, setShowAddModal] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   // Debounce search input (300ms)
   useEffect(() => {
@@ -105,6 +107,24 @@ export function PersonasScreen({ onToast }) {
     }
   };
 
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const result = await exportPeopleToExcel(churchId, {
+        search: debouncedSearch,
+        status: STATUS_TO_DB[filter] || null,
+      });
+      onToast({
+        title: 'Personas exportadas',
+        sub: `${result.rowCount} fila${result.rowCount === 1 ? '' : 's'} en ${result.filename}`,
+      });
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error al exportar', sub: e.message });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const handleUpdatePerson = async (personId, patch) => {
     try {
       const updated = await updatePerson(personId, patch);
@@ -134,8 +154,8 @@ export function PersonasScreen({ onToast }) {
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn btn-secondary" onClick={() => onToast({ tone: 'info', icon: 'info', title: 'Exportar pendiente', sub: 'Se activa en Fase 9 con Reportes.' })}>
-            <Icon name="download" size={14} /> Exportar
+          <button className="btn btn-secondary" onClick={handleExport} disabled={exporting || people === null || people.length === 0}>
+            <Icon name="download" size={14} /> {exporting ? 'Exportando…' : 'Exportar'}
           </button>
           <button
             className="btn btn-primary"

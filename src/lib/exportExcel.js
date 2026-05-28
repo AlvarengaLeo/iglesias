@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { listDonations, PAYMENT_METHOD_LABEL, PAYMENT_STATUS_LABEL, FREQUENCY_LABEL } from '../api/donations.js';
+import { listPeople, STATUS_TO_UI, personDisplayName } from '../api/people.js';
 
 // Export current donation filters to .xlsx
 export async function exportDonationsToExcel(churchId, filters = {}, filename) {
@@ -33,6 +34,40 @@ export async function exportDonationsToExcel(churchId, filters = {}, filename) {
   XLSX.utils.book_append_sheet(wb, ws, 'Donaciones');
 
   const name = filename || `donaciones-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  XLSX.writeFile(wb, name);
+  return { rowCount: rows.length, filename: name };
+}
+
+// Export current personas list to .xlsx (respecting filters de búsqueda/status)
+export async function exportPeopleToExcel(churchId, filters = {}, filename) {
+  const people = await listPeople(churchId, { ...filters, limit: 10000 });
+
+  const rows = people.map((p) => {
+    const tags = (p.tag_assignments || []).map((ta) => ta.tag?.name).filter(Boolean).join(', ');
+    return {
+      'Nombre': personDisplayName(p),
+      'Tipo': p.person_type === 'organization' ? 'Organización' : 'Individuo',
+      'Estado': STATUS_TO_UI[p.status] || p.status,
+      'Email': p.email || '',
+      'Teléfono': p.phone || '',
+      'Etiquetas': tags,
+      'Unido el': p.joined_at ? new Date(p.joined_at).toLocaleDateString('es') : '',
+      'Última actividad': p.last_activity_at ? new Date(p.last_activity_at).toLocaleDateString('es') : '',
+      'Próximo seguimiento': p.next_followup_at ? new Date(p.next_followup_at).toLocaleDateString('es') : '',
+      'Nota pastoral': p.pastoral_note || '',
+    };
+  });
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [
+    { wch: 28 }, { wch: 14 }, { wch: 14 }, { wch: 28 }, { wch: 16 },
+    { wch: 26 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 40 },
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Personas');
+
+  const name = filename || `personas-${new Date().toISOString().slice(0, 10)}.xlsx`;
   XLSX.writeFile(wb, name);
   return { rowCount: rows.length, filename: name };
 }
