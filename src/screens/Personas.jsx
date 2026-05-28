@@ -1,59 +1,147 @@
-// PersonasScreen — NOTA Fase 5+: datos hardcoded.
-// La conexion a Supabase entra en la fase del modulo correspondiente.
-import { useState } from 'react';
+// PersonasScreen — Fase 6: conectado a Supabase.
+// Lista real + búsqueda debounced + filtros + modal agregar + drawer con 4 tabs +
+// edit inline + tags (display) + household (display) + followups.
+//
+// Lo que NO está en esta fase (intencional):
+//   - CRUD de tags desde UI (solo display; API ya disponible)
+//   - Crear/editar households desde UI (solo display)
+//   - Envío de mensaje al donante (Fase de comunicaciones futura)
+
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Icon } from '../components/Icon.jsx';
 import { Badge } from '../components/Badge.jsx';
 import { formatMoney } from '../components/charts/index.jsx';
+import { useChurch } from '../hooks/useChurch.js';
+import { useAuth } from '../hooks/useAuth.js';
+import { useRole } from '../hooks/useRole.js';
+import {
+  listPeople,
+  getPersonDetail,
+  createPerson,
+  updatePerson,
+  STATUS_TO_DB,
+  STATUS_TO_UI,
+  STATUS_TONE,
+  personDisplayName,
+  personInitials,
+} from '../api/people.js';
+import {
+  listFollowupsByPerson,
+  createFollowup,
+  FOLLOWUP_TYPE_LABEL,
+  FOLLOWUP_TYPE_ICON,
+  FOLLOWUP_TYPE_TONE,
+} from '../api/followups.js';
+import { formatDate, formatRelativeTime } from '../lib/formatters.js';
 
-// Personas screen
-
-const PEOPLE = [
-  { id: 1, name: 'María González Pérez', initials: 'MG', phone: '(305) 555-0142', email: 'maria.gonzalez@gmail.com', type: 'Miembro', tone: 'navy', lastActivity: 'Donación · hace 2 días', tags: ['Diezmo recurrente', 'Coro'], totalYear: 3200, recurring: true, follow: 'Visita pastoral · 15 jun' },
-  { id: 2, name: 'Carlos Méndez', initials: 'CM', phone: '(786) 555-0188', email: 'cmendez@correo.com', type: 'Donante', tone: 'coffee', lastActivity: 'Donación · hace 5 días', tags: ['Mensual'], totalYear: 1850, recurring: true },
-  { id: 3, name: 'Ana Torres Ramírez', initials: 'AT', phone: '(305) 555-0199', email: 'ana.t@yahoo.com', type: 'Servidor', tone: 'success', lastActivity: 'Reunión · hace 1 día', tags: ['Niños', 'Líder'], totalYear: 1200, recurring: false },
-  { id: 4, name: 'Familia Ramírez', initials: 'FR', phone: '(305) 555-0210', email: 'ramirez.familia@gmail.com', type: 'Visitante', tone: 'info', lastActivity: 'Primera visita · 2 mar', tags: ['Nuevos'], totalYear: 0, recurring: false },
-  { id: 5, name: 'José Antonio Vargas', initials: 'JV', phone: '(786) 555-0233', email: 'jvargas@hotmail.com', type: 'Miembro', tone: 'navy', lastActivity: 'Donación · hace 1 semana', tags: ['Misiones'], totalYear: 980, recurring: false },
-  { id: 6, name: 'Lucía Hernández', initials: 'LH', phone: '(305) 555-0277', email: 'lucia.h@gmail.com', type: 'Donante', tone: 'coffee', lastActivity: 'Donación · hace 3 días', tags: ['Anual'], totalYear: 5400, recurring: true },
-  { id: 7, name: 'Pedro Castillo', initials: 'PC', phone: '(786) 555-0301', email: 'p.castillo@correo.com', type: 'Servidor', tone: 'success', lastActivity: 'Reunión · hace 4 días', tags: ['Alabanza'], totalYear: 720, recurring: false },
-  { id: 8, name: 'Roberto Salinas', initials: 'RS', phone: '(305) 555-0322', email: 'rsalinas@gmail.com', type: 'Inactivo', tone: 'muted', lastActivity: 'Sin actividad · 6 meses', tags: [], totalYear: 0, recurring: false },
-  { id: 9, name: 'Familia Ortega', initials: 'FO', phone: '(786) 555-0344', email: 'ortega.f@correo.com', type: 'Miembro', tone: 'navy', lastActivity: 'Donación · hace 6 días', tags: ['Diezmo recurrente', 'Familia'], totalYear: 4100, recurring: true },
-  { id: 10, name: 'Sofía Mendoza', initials: 'SM', phone: '(305) 555-0359', email: 'sofiam@gmail.com', type: 'Visitante', tone: 'info', lastActivity: 'Visita · hace 10 días', tags: ['Joven'], totalYear: 50, recurring: false },
-];
+const FILTERS = ['Todos', 'Miembros', 'Visitantes', 'Donantes', 'Servidores', 'Líderes', 'Inactivos'];
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function PersonasScreen({ onToast }) {
+  const { churchId } = useChurch();
+  const { user } = useAuth();
+  const { can } = useRole();
+
   const [filter, setFilter] = useState('Todos');
   const [search, setSearch] = useState('');
-  const [selected, setSelected] = useState(null);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [people, setPeople] = useState(null); // null = loading
+  const [error, setError] = useState(null);
+  const [selected, setSelected] = useState(null); // person object from list
   const [showAddModal, setShowAddModal] = useState(false);
-  const [profileTab, setProfileTab] = useState('Resumen');
 
-  const counts = {
-    Todos: PEOPLE.length,
-    Miembros: PEOPLE.filter(p => p.type === 'Miembro').length,
-    Visitantes: PEOPLE.filter(p => p.type === 'Visitante').length,
-    Donantes: PEOPLE.filter(p => p.type === 'Donante').length,
-    Servidores: PEOPLE.filter(p => p.type === 'Servidor').length,
-    Inactivos: PEOPLE.filter(p => p.type === 'Inactivo').length,
+  // Debounce search input (300ms)
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Fetch list when churchId / filter / debouncedSearch change
+  const refetch = async () => {
+    if (!churchId) return;
+    setError(null);
+    try {
+      const data = await listPeople(churchId, {
+        search: debouncedSearch,
+        status: STATUS_TO_DB[filter] || null,
+      });
+      setPeople(data);
+    } catch (e) {
+      console.error(e);
+      setError(e.message);
+      setPeople([]);
+    }
   };
 
-  const filtered = PEOPLE.filter(p => {
-    if (filter !== 'Todos' && p.type !== filter.replace(/s$/, '')) return false;
-    if (search && !p.name.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
+  useEffect(() => {
+    refetch();
+  }, [churchId, filter, debouncedSearch]);
 
-  const filters = ['Todos', 'Miembros', 'Visitantes', 'Donantes', 'Servidores', 'Inactivos'];
+  // Counts per filter (computed from non-filtered list — we re-query without
+  // status filter for counts; cached separately for accuracy)
+  const [counts, setCounts] = useState({});
+  useEffect(() => {
+    if (!churchId) return;
+    listPeople(churchId, { limit: 1000 })
+      .then((all) => {
+        const c = { Todos: all.length };
+        for (const [uiLabel, dbVal] of Object.entries(STATUS_TO_DB)) {
+          if (!dbVal) continue;
+          c[uiLabel] = all.filter((p) => p.status === dbVal).length;
+        }
+        setCounts(c);
+      })
+      .catch(() => setCounts({ Todos: 0 }));
+  }, [churchId, people?.length]);
+
+  const handleCreatePerson = async (payload) => {
+    try {
+      await createPerson(churchId, payload, user.id);
+      onToast({ title: 'Persona agregada correctamente', sub: 'Aparece en tu lista.' });
+      setShowAddModal(false);
+      await refetch();
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error al guardar', sub: e.message });
+    }
+  };
+
+  const handleUpdatePerson = async (personId, patch) => {
+    try {
+      const updated = await updatePerson(personId, patch);
+      onToast({ title: 'Persona actualizada correctamente' });
+      await refetch();
+      // Update selected to keep drawer in sync
+      if (selected?.id === personId) setSelected({ ...selected, ...updated });
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error al actualizar', sub: e.message });
+      throw e;
+    }
+  };
+
+  const totalLabel = useMemo(() => {
+    if (people === null) return 'Cargando…';
+    const total = counts.Todos ?? people.length;
+    return `${total} persona${total === 1 ? '' : 's'} registrada${total === 1 ? '' : 's'}`;
+  }, [counts, people]);
 
   return (
     <div className="page">
       <div className="page-header">
         <div className="page-header-text">
           <h2 className="page-greeting">Personas</h2>
-          <p className="page-sub">Administra miembros, visitantes, donantes y servidores · {PEOPLE.length} personas registradas</p>
+          <p className="page-sub">
+            Administra miembros, visitantes, donantes y servidores · {totalLabel}
+          </p>
         </div>
         <div className="page-actions">
-          <button className="btn btn-secondary"><Icon name="download" size={14} /> Exportar</button>
-          <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
+          <button className="btn btn-secondary" onClick={() => onToast({ tone: 'info', icon: 'info', title: 'Exportar pendiente', sub: 'Se activa en Fase 9 con Reportes.' })}>
+            <Icon name="download" size={14} /> Exportar
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={() => setShowAddModal(true)}
+            disabled={!can('people.write')}
+          >
             <Icon name="plus" size={14} /> Agregar persona
           </button>
         </div>
@@ -64,16 +152,24 @@ export function PersonasScreen({ onToast }) {
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div className="input-wrap" style={{ flex: '1 1 280px', minWidth: 240 }}>
             <Icon name="search" />
-            <input className="input" placeholder="Buscar por nombre, teléfono o email" value={search} onChange={e => setSearch(e.target.value)} />
+            <input
+              className="input"
+              placeholder="Buscar por nombre, teléfono o email"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {filters.map(f => (
-              <button key={f} className={`chip ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
-                {f} <span className="count">{counts[f]}</span>
+            {FILTERS.map((f) => (
+              <button
+                key={f}
+                className={`chip ${filter === f ? 'active' : ''}`}
+                onClick={() => setFilter(f)}
+              >
+                {f} <span className="count">{counts[f] ?? '—'}</span>
               </button>
             ))}
           </div>
-          <button className="pill-btn"><Icon name="filter" /> Etiquetas <Icon name="chevronDown" /></button>
         </div>
       </div>
 
@@ -93,296 +189,940 @@ export function PersonasScreen({ onToast }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.map(p => (
-                <tr key={p.id} className={selected?.id === p.id ? 'selected' : ''} onClick={() => setSelected(p)}>
-                  <td onClick={e => e.stopPropagation()}><input type="checkbox" /></td>
-                  <td>
-                    <div className="person-cell">
-                      <div className={`avatar ${p.tone === 'coffee' ? 'coffee' : p.tone === 'navy' ? 'navy' : ''}`}>{p.initials}</div>
-                      <div>
-                        <div style={{ fontWeight: 600 }}>{p.name}</div>
-                        <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p.tags.slice(0,2).join(' · ') || '—'}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="muted tnum">{p.phone}</td>
-                  <td className="muted">{p.email}</td>
-                  <td><PersonBadge type={p.type} /></td>
-                  <td className="muted" style={{ fontSize: 12 }}>{p.lastActivity}</td>
-                  <td onClick={e => e.stopPropagation()}>
-                    <div className="row-actions" style={{ justifyContent: 'flex-end' }}>
-                      <button className="btn btn-sm btn-ghost" title="Ver perfil" onClick={() => setSelected(p)}><Icon name="eye" size={14} /></button>
-                      <button className="btn btn-sm btn-ghost" title="Editar"><Icon name="edit" size={14} /></button>
-                      <button className="btn btn-sm btn-ghost" title="Enviar mensaje"><Icon name="send" size={14} /></button>
-                    </div>
+              {people === null && (
+                <tr>
+                  <td colSpan={7} style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
+                    Cargando personas…
                   </td>
                 </tr>
+              )}
+              {people !== null && people.length === 0 && (
+                <tr>
+                  <td colSpan={7} style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
+                    {error ? `Error: ${error}` :
+                      debouncedSearch ? `Sin resultados para "${debouncedSearch}"` :
+                      filter !== 'Todos' ? `Sin personas en categoría "${filter}"` :
+                      'Tu congregación empieza aquí. Click "Agregar persona" para comenzar.'}
+                  </td>
+                </tr>
+              )}
+              {people?.map((p) => (
+                <PersonRow
+                  key={p.id}
+                  person={p}
+                  isSelected={selected?.id === p.id}
+                  onSelect={() => setSelected(p)}
+                />
               ))}
             </tbody>
           </table>
         </div>
 
-        {/* Pagination */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', borderTop: '1px solid var(--border-soft)', fontSize: 12, color: 'var(--muted)' }}>
-          <span>Mostrando 1–{filtered.length} de {PEOPLE.length} personas</span>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button className="btn btn-sm btn-secondary" disabled><Icon name="chevronLeft" size={12} /> Anterior</button>
-            <button className="btn btn-sm btn-secondary">Siguiente <Icon name="chevronRight" size={12} /></button>
-          </div>
+        <div
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '12px 20px', borderTop: '1px solid var(--border-soft)',
+            fontSize: 12, color: 'var(--muted)',
+          }}
+        >
+          <span>
+            Mostrando {people?.length || 0} {people?.length === 1 ? 'persona' : 'personas'}
+            {filter !== 'Todos' && ` (filtro: ${filter})`}
+          </span>
+          <span style={{ fontSize: 11 }}>
+            {people !== null && people.length === 200 && '⚠ Mostrando primeros 200. Filtra para ver menos.'}
+          </span>
         </div>
       </div>
 
       {/* Drawer */}
       {selected && (
-        <div className="drawer-overlay" onClick={() => setSelected(null)}>
-          <div className="drawer" onClick={e => e.stopPropagation()}>
-            <div className="drawer-header">
-              <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-                <div className={`avatar lg ${selected.tone === 'coffee' ? 'coffee' : 'navy'}`}>{selected.initials}</div>
-                <div>
-                  <h3 style={{ margin: '0 0 4px', fontSize: 17, fontWeight: 700 }}>{selected.name}</h3>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <PersonBadge type={selected.type} />
-                    {selected.recurring && <Badge tone="coffee" icon="refresh">Recurrente</Badge>}
-                  </div>
-                </div>
-              </div>
-              <button className="icon-btn" onClick={() => setSelected(null)}><Icon name="x" /></button>
-            </div>
-
-            <div style={{ padding: '0 24px' }}>
-              <div className="tabs-underline">
-                {['Resumen', 'Donaciones', 'Seguimiento', 'Notas'].map(t => (
-                  <button key={t} className={`tab-u ${profileTab === t ? 'active' : ''}`} onClick={() => setProfileTab(t)}>{t}</button>
-                ))}
-              </div>
-            </div>
-
-            <div className="drawer-body">
-              {profileTab === 'Resumen' && <ProfileResumen p={selected} />}
-              {profileTab === 'Donaciones' && <ProfileDonaciones p={selected} />}
-              {profileTab === 'Seguimiento' && <ProfileSeguimiento p={selected} />}
-              {profileTab === 'Notas' && <ProfileNotas p={selected} />}
-            </div>
-
-            <div className="drawer-foot">
-              <button className="btn btn-secondary"><Icon name="send" size={14} /> Enviar mensaje</button>
-              <button className="btn btn-primary"><Icon name="edit" size={14} /> Editar persona</button>
-            </div>
-          </div>
-        </div>
+        <PersonDrawer
+          personId={selected.id}
+          onClose={() => setSelected(null)}
+          canEdit={can('people.write')}
+          canSeePrivateNotes={can('people.notes.private')}
+          onSave={handleUpdatePerson}
+          onToast={onToast}
+          currentUserId={user.id}
+          churchId={churchId}
+        />
       )}
 
       {/* Add Modal */}
       {showAddModal && (
-        <div className="modal-overlay" onClick={() => setShowAddModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <h3>Agregar persona</h3>
-                <p>Captura la información esencial. Podrás completar el perfil después.</p>
-              </div>
-              <button className="icon-btn" onClick={() => setShowAddModal(false)}><Icon name="x" /></button>
-            </div>
-            <div className="modal-body">
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-                <div className="field"><label>Nombre</label><input placeholder="María" /></div>
-                <div className="field"><label>Apellido</label><input placeholder="González" /></div>
-                <div className="field"><label>Teléfono</label><input placeholder="(305) 555-0000" /></div>
-                <div className="field"><label>Email</label><input placeholder="email@ejemplo.com" /></div>
-                <div className="field" style={{ gridColumn: '1 / -1' }}>
-                  <label>Tipo</label>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {['Miembro', 'Visitante', 'Donante', 'Servidor'].map((t, i) => (
-                      <button key={t} className={`chip ${i === 0 ? 'active' : ''}`}>{t}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className="field" style={{ gridColumn: '1 / -1' }}>
-                  <label>Notas <span className="hint">(opcional)</span></label>
-                  <textarea placeholder="Observaciones pastorales, contexto familiar, etc."></textarea>
-                </div>
-              </div>
-            </div>
-            <div className="modal-foot">
-              <button className="btn btn-ghost" onClick={() => setShowAddModal(false)}>Cancelar</button>
-              <button className="btn btn-primary" onClick={() => { setShowAddModal(false); onToast({ title: 'Persona agregada correctamente', sub: 'Aparecerá en tu lista de personas.' }); }}>
-                <Icon name="check" size={14} /> Guardar persona
-              </button>
-            </div>
-          </div>
-        </div>
+        <AddPersonModal
+          onClose={() => setShowAddModal(false)}
+          onCreate={handleCreatePerson}
+        />
       )}
     </div>
   );
-};
+}
 
-const PersonBadge = ({ type }) => {
-  const map = {
-    Miembro: { tone: 'navy', icon: null },
-    Visitante: { tone: 'info', icon: null },
-    Donante: { tone: 'coffee', icon: null },
-    Servidor: { tone: 'success', icon: null },
-    Inactivo: { tone: 'muted', icon: null },
-  };
-  const m = map[type] || { tone: 'muted' };
-  return <Badge tone={m.tone} dot>{type}</Badge>;
-};
+// =====================================================================
+// PersonRow — fila individual de la tabla
+// =====================================================================
+function PersonRow({ person, isSelected, onSelect }) {
+  const name = personDisplayName(person);
+  const initials = personInitials(person);
+  const tone = STATUS_TONE[person.status] || 'muted';
+  const tags = (person.tag_assignments || []).map((ta) => ta.tag).filter(Boolean);
+  const tagPreview = tags.slice(0, 2).map((t) => t.name).join(' · ') || '—';
+  const lastActivity = person.last_activity_at
+    ? formatRelativeTime(person.last_activity_at)
+    : person.joined_at
+      ? `Unido · ${formatDate(person.joined_at)}`
+      : '—';
 
-const ProfileResumen = ({ p }) => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-    {/* Contact */}
-    <Section title="Contacto">
-      <InfoRow icon="phone" label="Teléfono" value={p.phone} />
-      <InfoRow icon="mail" label="Email" value={p.email} />
-      <InfoRow icon="map" label="Dirección" value="2310 SW 27th Ave, Miami FL 33145" />
-    </Section>
-
-    {/* Tags */}
-    <Section title="Etiquetas">
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {p.tags.length ? p.tags.map(t => <Badge key={t} tone="coffee">{t}</Badge>) : <span className="muted" style={{ fontSize: 12 }}>Sin etiquetas</span>}
-        <button className="chip" style={{ padding: '4px 10px' }}><Icon name="plus" size={11} /> Agregar</button>
-      </div>
-    </Section>
-
-    {/* Family */}
-    <Section title="Familia">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <FamilyRow name="José González" rel="Esposo" type="Miembro" />
-        <FamilyRow name="Daniel González" rel="Hijo" type="Servidor" />
-        <FamilyRow name="Lucía González" rel="Hija" type="Visitante" />
-      </div>
-    </Section>
-
-    {/* Donation summary */}
-    <Section title="Resumen de donaciones">
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <MiniStat label="Total donado este año" value={formatMoney(p.totalYear)} />
-        <MiniStat label="Última donación" value="$250 · hace 2 días" />
-        <MiniStat label="Donación recurrente" value={p.recurring ? 'Activa · $200/mes' : 'No activa'} success={p.recurring} />
-        <MiniStat label="Recibos enviados" value="14" />
-      </div>
-    </Section>
-
-    {/* Follow-up */}
-    <Section title="Seguimiento">
-      <InfoRow icon="clock" label="Último contacto" value="Visita pastoral · 12 mayo" />
-      <InfoRow icon="calendar" label="Próximo seguimiento" value="15 junio · Visita programada" highlight />
-    </Section>
-  </div>
-);
-
-const ProfileDonaciones = ({ p }) => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-      <MiniStat label="Total este año" value={formatMoney(p.totalYear)} />
-      <MiniStat label="Promedio mensual" value={formatMoney(Math.round(p.totalYear/8))} />
-    </div>
-    <Section title="Historial">
-      {[
-        { date: '23 may 2026', amount: 250, fund: 'Fondo General', method: 'ACH', status: 'Pagada' },
-        { date: '23 abr 2026', amount: 250, fund: 'Fondo General', method: 'ACH', status: 'Pagada' },
-        { date: '15 abr 2026', amount: 100, fund: 'Misiones 2026', method: 'Tarjeta', status: 'Pagada' },
-        { date: '23 mar 2026', amount: 250, fund: 'Fondo General', method: 'ACH', status: 'Pagada' },
-        { date: '23 feb 2026', amount: 200, fund: 'Fondo General', method: 'ACH', status: 'Pagada' },
-      ].map((d, i) => (
-        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--border-soft)' }}>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 13 }}>{formatMoney(d.amount)} · {d.fund}</div>
-            <div style={{ fontSize: 11, color: 'var(--muted)' }}>{d.date} · {d.method}</div>
+  return (
+    <tr className={isSelected ? 'selected' : ''} onClick={onSelect} style={{ cursor: 'pointer' }}>
+      <td onClick={(e) => e.stopPropagation()}><input type="checkbox" /></td>
+      <td>
+        <div className="person-cell">
+          <div className={`avatar ${tone === 'coffee' ? 'coffee' : tone === 'navy' ? 'navy' : ''}`}>
+            {initials}
           </div>
-          <Badge tone="success" dot>{d.status}</Badge>
+          <div>
+            <div style={{ fontWeight: 600 }}>{name}</div>
+            <div style={{ fontSize: 11, color: 'var(--muted)' }}>{tagPreview}</div>
+          </div>
         </div>
-      ))}
-    </Section>
-  </div>
-);
+      </td>
+      <td className="muted tnum">{person.phone || '—'}</td>
+      <td className="muted">{person.email || '—'}</td>
+      <td><PersonBadge status={person.status} /></td>
+      <td className="muted" style={{ fontSize: 12 }}>{lastActivity}</td>
+      <td onClick={(e) => e.stopPropagation()}>
+        <div className="row-actions" style={{ justifyContent: 'flex-end' }}>
+          <button className="btn btn-sm btn-ghost" title="Ver perfil" onClick={onSelect}>
+            <Icon name="eye" size={14} />
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
 
-const ProfileSeguimiento = ({ p }) => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-    <div className="banner info">
-      <Icon name="info" />
-      Próximo seguimiento: <strong>Visita pastoral programada para el 15 de junio</strong>
-    </div>
-    <Section title="Historial pastoral">
-      <Timeline items={[
-        { icon: 'phone', text: 'Llamada de seguimiento — María compartió motivos de oración por su hijo.', time: '12 may 2026', tone: 'coffee' },
-        { icon: 'user', text: 'Visita pastoral en casa — Familia recibió oración y palabras de aliento.', time: '20 abr 2026', tone: 'navy' },
-        { icon: 'mail', text: 'Envío de recurso devocional «Caminar con Cristo».', time: '14 mar 2026', tone: 'success' },
-      ]} />
-    </Section>
-  </div>
-);
+function PersonBadge({ status }) {
+  const label = STATUS_TO_UI[status] || status || '—';
+  const tone = STATUS_TONE[status] || 'muted';
+  return <Badge tone={tone} dot>{label}</Badge>;
+}
 
-const ProfileNotas = ({ p }) => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-    <div className="banner">
-      <Icon name="lock" />
-      Las notas pastorales son privadas y solo visibles para administradores y pastores.
-    </div>
-    <div style={{ background: 'var(--bg)', padding: 14, borderRadius: 12, border: '1px solid var(--border-soft)' }}>
-      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>Nota · Pastor Miguel · 12 may 2026</div>
-      <div style={{ fontSize: 13, lineHeight: 1.55 }}>Familia muy comprometida con el ministerio de niños. María está liderando el grupo de oración de las mujeres. Solicitar oración por la salud de su madre.</div>
-    </div>
-    <div style={{ background: 'var(--bg)', padding: 14, borderRadius: 12, border: '1px solid var(--border-soft)' }}>
-      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>Nota · Pastora Elena · 28 mar 2026</div>
-      <div style={{ fontSize: 13, lineHeight: 1.55 }}>Daniel (hijo) participará en el campamento juvenil de verano. Confirmar inscripción.</div>
-    </div>
-    <button className="btn btn-secondary" style={{ alignSelf: 'flex-start' }}><Icon name="plus" size={14} /> Agregar nota</button>
-  </div>
-);
+// =====================================================================
+// PersonDrawer — perfil completo con 4 tabs
+// =====================================================================
+function PersonDrawer({ personId, onClose, canEdit, canSeePrivateNotes, onSave, onToast, currentUserId, churchId }) {
+  const [tab, setTab] = useState('Resumen');
+  const [detail, setDetail] = useState(null);
+  const [editing, setEditing] = useState(false);
 
-const Section = ({ title, children }) => (
-  <div>
-    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 10 }}>{title}</div>
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{children}</div>
-  </div>
-);
+  useEffect(() => {
+    setEditing(false);
+    setDetail(null);
+    getPersonDetail(personId)
+      .then(setDetail)
+      .catch((e) => {
+        console.error(e);
+        onToast({ tone: 'error', icon: 'alert', title: 'No se pudo cargar el perfil', sub: e.message });
+      });
+  }, [personId]);
 
-const InfoRow = ({ icon, label, value, highlight }) => (
-  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' }}>
-    <div style={{
-      width: 30, height: 30, borderRadius: 8,
-      background: highlight ? 'var(--coffee-bg)' : 'var(--bg-2)',
-      color: highlight ? 'var(--coffee)' : 'var(--muted)',
-      display: 'grid', placeItems: 'center', flexShrink: 0
-    }}><Icon name={icon} size={14} /></div>
-    <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ fontSize: 11, color: 'var(--muted)' }}>{label}</div>
-      <div style={{ fontSize: 13, fontWeight: 500 }}>{value}</div>
-    </div>
-  </div>
-);
-
-const FamilyRow = ({ name, rel, type }) => (
-  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px', borderRadius: 8, background: 'var(--bg)' }}>
-    <div className="avatar sm">{name.split(' ').map(n => n[0]).join('').slice(0,2)}</div>
-    <div style={{ flex: 1 }}>
-      <div style={{ fontSize: 13, fontWeight: 500 }}>{name}</div>
-      <div style={{ fontSize: 11, color: 'var(--muted)' }}>{rel}</div>
-    </div>
-    <PersonBadge type={type} />
-  </div>
-);
-
-const MiniStat = ({ label, value, success }) => (
-  <div style={{ padding: 12, borderRadius: 10, background: 'var(--bg)', border: '1px solid var(--border-soft)' }}>
-    <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>{label}</div>
-    <div style={{ fontSize: 14, fontWeight: 700, color: success ? 'var(--success)' : 'var(--text)' }}>{value}</div>
-  </div>
-);
-
-const Timeline = ({ items }) => (
-  <div className="timeline">
-    {items.map((it, i) => (
-      <div key={i} className="timeline-item">
-        <div className={`timeline-dot ${it.tone || 'coffee'}`}><Icon name={it.icon} /></div>
-        <div className="timeline-body">
-          <p>{it.text}</p>
-          <span>{it.time}</span>
+  if (!detail) {
+    return (
+      <div className="drawer-overlay" onClick={onClose}>
+        <div className="drawer" onClick={(e) => e.stopPropagation()}>
+          <div className="drawer-header">
+            <span style={{ color: 'var(--muted)' }}>Cargando…</span>
+            <button className="icon-btn" onClick={onClose}><Icon name="x" /></button>
+          </div>
+          <div className="drawer-body">
+            <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)' }}>
+              Cargando datos del perfil…
+            </div>
+          </div>
         </div>
       </div>
-    ))}
-  </div>
-);
+    );
+  }
+
+  const p = detail.person;
+  const name = personDisplayName(p);
+  const initials = personInitials(p);
+  const tone = STATUS_TONE[p.status] || 'muted';
+
+  return (
+    <div className="drawer-overlay" onClick={onClose}>
+      <div className="drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="drawer-header">
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+            <div className={`avatar lg ${tone === 'coffee' ? 'coffee' : 'navy'}`}>{initials}</div>
+            <div>
+              <h3 style={{ margin: '0 0 4px', fontSize: 17, fontWeight: 700 }}>{name}</h3>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <PersonBadge status={p.status} />
+                {detail.recurring && <Badge tone="coffee" icon="refresh">Recurrente</Badge>}
+              </div>
+            </div>
+          </div>
+          <button className="icon-btn" onClick={onClose}><Icon name="x" /></button>
+        </div>
+
+        <div style={{ padding: '0 24px' }}>
+          <div className="tabs-underline">
+            {['Resumen', 'Donaciones', 'Seguimiento', 'Notas'].map((t) => (
+              <button
+                key={t}
+                className={`tab-u ${tab === t ? 'active' : ''}`}
+                onClick={() => setTab(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="drawer-body">
+          {tab === 'Resumen' && (
+            <ProfileResumen
+              detail={detail}
+              editing={editing}
+              canEdit={canEdit}
+              onCancelEdit={() => setEditing(false)}
+              onSaveEdit={async (patch) => {
+                await onSave(personId, patch);
+                setEditing(false);
+              }}
+            />
+          )}
+          {tab === 'Donaciones' && <ProfileDonaciones detail={detail} />}
+          {tab === 'Seguimiento' && (
+            <ProfileSeguimiento
+              detail={detail}
+              canSeePrivateNotes={canSeePrivateNotes}
+              canWrite={canEdit}
+              churchId={churchId}
+              personId={personId}
+              currentUserId={currentUserId}
+              onToast={onToast}
+              onRefresh={() => getPersonDetail(personId).then(setDetail)}
+            />
+          )}
+          {tab === 'Notas' && (
+            <ProfileNotas
+              detail={detail}
+              canSeePrivateNotes={canSeePrivateNotes}
+              canWrite={canEdit}
+              churchId={churchId}
+              personId={personId}
+              currentUserId={currentUserId}
+              onToast={onToast}
+              onRefresh={() => getPersonDetail(personId).then(setDetail)}
+            />
+          )}
+        </div>
+
+        {tab === 'Resumen' && (
+          <div className="drawer-foot">
+            <button
+              className="btn btn-secondary"
+              onClick={() => onToast({ tone: 'info', icon: 'info', title: 'Mensaje pendiente', sub: 'Comunicaciones se conectan en Fase futura.' })}
+            >
+              <Icon name="send" size={14} /> Enviar mensaje
+            </button>
+            {!editing && canEdit && (
+              <button className="btn btn-primary" onClick={() => setEditing(true)}>
+                <Icon name="edit" size={14} /> Editar persona
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// ProfileResumen — tab Resumen (con modo edit inline)
+// =====================================================================
+function ProfileResumen({ detail, editing, canEdit, onCancelEdit, onSaveEdit }) {
+  const { person, householdMembers, household, aggregates, recurring } = detail;
+  const tags = (person.tag_assignments || []).map((ta) => ta.tag).filter(Boolean);
+
+  if (editing) {
+    return <EditPersonForm person={person} onCancel={onCancelEdit} onSave={onSaveEdit} />;
+  }
+
+  const addr = person.address || {};
+  const addrFull = [addr.street, addr.city, addr.state, addr.zip].filter(Boolean).join(', ') || '—';
+  const lastDonationLabel = aggregates.lastDonation
+    ? `${formatMoney(Number(aggregates.lastDonation.amount_cents) / 100)} · ${formatRelativeTime(aggregates.lastDonation.donation_date)}`
+    : 'Sin donaciones';
+  const recurringLabel = recurring
+    ? `Activa · ${formatMoney(Number(recurring.amount_cents) / 100)}/${recurring.frequency === 'monthly' ? 'mes' : 'año'}`
+    : 'No activa';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <Section title="Contacto">
+        <InfoRow icon="phone" label="Teléfono" value={person.phone || '—'} />
+        <InfoRow icon="mail" label="Email" value={person.email || '—'} />
+        <InfoRow icon="map" label="Dirección" value={addrFull} />
+      </Section>
+
+      <Section title="Etiquetas">
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {tags.length ? (
+            tags.map((t) => (
+              <Badge key={t.id} tone="coffee">{t.name}</Badge>
+            ))
+          ) : (
+            <span className="muted" style={{ fontSize: 12 }}>Sin etiquetas</span>
+          )}
+        </div>
+      </Section>
+
+      {household && (
+        <Section title={`Familia · ${household.name}`}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {householdMembers
+              .filter((m) => m.person?.id !== person.id)
+              .map((m) => (
+                <FamilyRow
+                  key={m.person.id}
+                  name={personDisplayName(m.person)}
+                  rel={m.relationship}
+                  status={m.person.status}
+                />
+              ))}
+            {householdMembers.length === 1 && (
+              <span className="muted" style={{ fontSize: 12 }}>Sin otros miembros en el hogar.</span>
+            )}
+          </div>
+        </Section>
+      )}
+
+      <Section title="Resumen de donaciones">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <MiniStat
+            label="Total donado este año"
+            value={formatMoney(aggregates.paidThisYearCents / 100)}
+          />
+          <MiniStat label="Última donación" value={lastDonationLabel} />
+          <MiniStat
+            label="Donación recurrente"
+            value={recurringLabel}
+            success={!!recurring}
+          />
+          <MiniStat label="Recibos generados" value={String(aggregates.receiptCount)} />
+        </div>
+      </Section>
+
+      {(person.pastoral_note || person.next_followup_at) && (
+        <Section title="Seguimiento">
+          {person.next_followup_at && (
+            <InfoRow
+              icon="calendar"
+              label="Próximo seguimiento"
+              value={formatDate(person.next_followup_at)}
+              highlight
+            />
+          )}
+          {person.pastoral_note && (
+            <InfoRow icon="fileText" label="Nota resumen" value={person.pastoral_note} />
+          )}
+        </Section>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// EditPersonForm — modo edit inline en el drawer
+// =====================================================================
+function EditPersonForm({ person, onCancel, onSave }) {
+  const [form, setForm] = useState({
+    person_type: person.person_type,
+    first_name: person.first_name || '',
+    last_name: person.last_name || '',
+    organization_name: person.organization_name || '',
+    email: person.email || '',
+    phone: person.phone || '',
+    status: person.status,
+    pastoral_note: person.pastoral_note || '',
+  });
+  const [saving, setSaving] = useState(false);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+  const handleSave = async () => {
+    // Validations
+    if (form.person_type === 'individual' && !form.first_name?.trim() && !form.last_name?.trim()) {
+      return alert('Persona individual: requiere al menos nombre o apellido.');
+    }
+    if (form.person_type === 'organization' && !form.organization_name?.trim()) {
+      return alert('Organización: requiere nombre.');
+    }
+    if (form.email && !EMAIL_REGEX.test(form.email)) {
+      return alert('Email inválido.');
+    }
+    setSaving(true);
+    try {
+      await onSave(form);
+    } catch {
+      // toast handled by parent
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Section title="Editar perfil">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          {form.person_type === 'individual' ? (
+            <>
+              <div className="field">
+                <label>Nombre</label>
+                <input value={form.first_name} onChange={set('first_name')} autoFocus />
+              </div>
+              <div className="field">
+                <label>Apellido</label>
+                <input value={form.last_name} onChange={set('last_name')} />
+              </div>
+            </>
+          ) : (
+            <div className="field" style={{ gridColumn: '1 / -1' }}>
+              <label>Nombre de organización</label>
+              <input value={form.organization_name} onChange={set('organization_name')} autoFocus />
+            </div>
+          )}
+          <div className="field">
+            <label>Teléfono</label>
+            <input value={form.phone} onChange={set('phone')} placeholder="(305) 555-0000" />
+          </div>
+          <div className="field">
+            <label>Email</label>
+            <input type="email" value={form.email} onChange={set('email')} placeholder="email@ejemplo.com" />
+          </div>
+          <div className="field" style={{ gridColumn: '1 / -1' }}>
+            <label>Tipo</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {Object.entries(STATUS_TO_UI).map(([dbVal, label]) => (
+                <button
+                  key={dbVal}
+                  type="button"
+                  className={`chip ${form.status === dbVal ? 'active' : ''}`}
+                  onClick={() => setForm({ ...form, status: dbVal })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="field" style={{ gridColumn: '1 / -1' }}>
+            <label>Nota pastoral <span className="hint">(visible solo a admin/pastor)</span></label>
+            <textarea value={form.pastoral_note} onChange={set('pastoral_note')} rows={3} />
+          </div>
+        </div>
+      </Section>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button className="btn btn-secondary" onClick={onCancel} disabled={saving}>
+          Cancelar
+        </button>
+        <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+          <Icon name="check" size={14} /> {saving ? 'Guardando…' : 'Guardar cambios'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// ProfileDonaciones
+// =====================================================================
+function ProfileDonaciones({ detail }) {
+  const { donations, aggregates } = detail;
+  const monthlyAvg = aggregates.paidThisYearCents / 100 / Math.max(1, new Date().getMonth() + 1);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <MiniStat label="Total este año" value={formatMoney(aggregates.paidThisYearCents / 100)} />
+        <MiniStat label="Promedio mensual" value={formatMoney(Math.round(monthlyAvg))} />
+      </div>
+      <Section title={`Historial (${donations.length})`}>
+        {donations.length === 0 && (
+          <div style={{ padding: 20, color: 'var(--muted)', fontSize: 13, textAlign: 'center' }}>
+            Esta persona aún no ha registrado donaciones.
+          </div>
+        )}
+        {donations.map((d) => (
+          <div
+            key={d.id}
+            style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '10px 0', borderBottom: '1px solid var(--border-soft)',
+            }}
+          >
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>
+                {formatMoney(Number(d.amount_cents) / 100)} · {d.fund?.name || '—'}
+                {d.campaign?.name && <span style={{ color: 'var(--muted)' }}> · {d.campaign.name}</span>}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                {formatDate(d.donation_date)} · {paymentMethodLabel(d.payment_method)}
+              </div>
+            </div>
+            <PaymentStatusBadge status={d.payment_status} />
+          </div>
+        ))}
+      </Section>
+    </div>
+  );
+}
+
+function paymentMethodLabel(m) {
+  return ({
+    card: 'Tarjeta', ach: 'ACH', cash: 'Efectivo',
+    check: 'Cheque', stripe: 'Stripe', other: 'Otro',
+  }[m]) || m;
+}
+
+function PaymentStatusBadge({ status }) {
+  const map = {
+    paid:     { tone: 'success', label: 'Pagada' },
+    pending:  { tone: 'warning', label: 'Pendiente' },
+    failed:   { tone: 'error', label: 'Fallida' },
+    refunded: { tone: 'muted', label: 'Reembolsada' },
+    disputed: { tone: 'error', label: 'Disputa' },
+  };
+  const m = map[status] || { tone: 'muted', label: status };
+  return <Badge tone={m.tone} dot>{m.label}</Badge>;
+}
+
+// =====================================================================
+// ProfileSeguimiento — followups públicos + agregar
+// =====================================================================
+function ProfileSeguimiento({ detail, canSeePrivateNotes, canWrite, churchId, personId, currentUserId, onToast, onRefresh }) {
+  const { followups, person } = detail;
+  // Only show non-private here (private goes to Notas tab)
+  const items = followups.filter((f) => !f.is_private);
+  const [showForm, setShowForm] = useState(false);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {person.next_followup_at && (
+        <div className="banner info">
+          <Icon name="info" />
+          Próximo seguimiento: <strong>{formatDate(person.next_followup_at)}</strong>
+        </div>
+      )}
+      {!showForm && canWrite && (
+        <button
+          className="btn btn-secondary"
+          style={{ alignSelf: 'flex-start' }}
+          onClick={() => setShowForm(true)}
+        >
+          <Icon name="plus" size={14} /> Agregar seguimiento
+        </button>
+      )}
+      {showForm && (
+        <AddFollowupForm
+          churchId={churchId}
+          personId={personId}
+          currentUserId={currentUserId}
+          forcePrivate={false}
+          onCancel={() => setShowForm(false)}
+          onCreate={async () => {
+            await onRefresh();
+            setShowForm(false);
+            onToast({ title: 'Seguimiento agregado' });
+          }}
+          onError={(msg) => onToast({ tone: 'error', icon: 'alert', title: 'Error', sub: msg })}
+        />
+      )}
+      <Section title={`Historial pastoral (${items.length})`}>
+        {items.length === 0 ? (
+          <div style={{ padding: 20, color: 'var(--muted)', fontSize: 13, textAlign: 'center' }}>
+            Sin seguimientos públicos.
+          </div>
+        ) : (
+          <div className="timeline">
+            {items.map((f) => (
+              <div key={f.id} className="timeline-item">
+                <div className={`timeline-dot ${FOLLOWUP_TYPE_TONE[f.followup_type] || 'coffee'}`}>
+                  <Icon name={FOLLOWUP_TYPE_ICON[f.followup_type] || 'info'} />
+                </div>
+                <div className="timeline-body">
+                  <p><strong>{FOLLOWUP_TYPE_LABEL[f.followup_type]}:</strong> {f.title}</p>
+                  {f.body && <p style={{ marginTop: 4, color: 'var(--muted)' }}>{f.body}</p>}
+                  <span>{formatDate(f.occurred_at)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+// =====================================================================
+// ProfileNotas — followups privados (admin/pastor only)
+// =====================================================================
+function ProfileNotas({ detail, canSeePrivateNotes, canWrite, churchId, personId, currentUserId, onToast, onRefresh }) {
+  const { followups } = detail;
+  const items = followups.filter((f) => f.is_private);
+  const [showForm, setShowForm] = useState(false);
+
+  if (!canSeePrivateNotes) {
+    return (
+      <div className="banner">
+        <Icon name="lock" />
+        Las notas pastorales son privadas. Solo admin y pastor pueden verlas.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="banner">
+        <Icon name="lock" />
+        Las notas pastorales son privadas y solo visibles para admin/pastor.
+      </div>
+      {!showForm && canWrite && (
+        <button
+          className="btn btn-secondary"
+          style={{ alignSelf: 'flex-start' }}
+          onClick={() => setShowForm(true)}
+        >
+          <Icon name="plus" size={14} /> Agregar nota
+        </button>
+      )}
+      {showForm && (
+        <AddFollowupForm
+          churchId={churchId}
+          personId={personId}
+          currentUserId={currentUserId}
+          forcePrivate={true}
+          onCancel={() => setShowForm(false)}
+          onCreate={async () => {
+            await onRefresh();
+            setShowForm(false);
+            onToast({ title: 'Nota agregada' });
+          }}
+          onError={(msg) => onToast({ tone: 'error', icon: 'alert', title: 'Error', sub: msg })}
+        />
+      )}
+      {items.length === 0 ? (
+        <div style={{ padding: 20, color: 'var(--muted)', fontSize: 13, textAlign: 'center' }}>
+          Sin notas privadas todavía.
+        </div>
+      ) : (
+        items.map((f) => (
+          <div
+            key={f.id}
+            style={{
+              background: 'var(--bg)', padding: 14, borderRadius: 12,
+              border: '1px solid var(--border-soft)',
+            }}
+          >
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>
+              {FOLLOWUP_TYPE_LABEL[f.followup_type]} · {formatDate(f.occurred_at)}
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{f.title}</div>
+            {f.body && <div style={{ fontSize: 13, lineHeight: 1.55 }}>{f.body}</div>}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// AddFollowupForm — used by both Seguimiento and Notas tabs
+// =====================================================================
+function AddFollowupForm({ churchId, personId, currentUserId, forcePrivate, onCancel, onCreate, onError }) {
+  const [type, setType] = useState(forcePrivate ? 'note' : 'visit');
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!title.trim()) return alert('Título requerido');
+    setSaving(true);
+    try {
+      await createFollowup(
+        churchId,
+        personId,
+        { followup_type: type, title, body, is_private: forcePrivate },
+        currentUserId
+      );
+      onCreate();
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        background: 'var(--bg)', padding: 14, borderRadius: 12,
+        border: '1px solid var(--border-soft)',
+        display: 'flex', flexDirection: 'column', gap: 10,
+      }}
+    >
+      <div className="field">
+        <label>Tipo</label>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {Object.entries(FOLLOWUP_TYPE_LABEL).map(([k, v]) => (
+            <button key={k} type="button" className={`chip ${type === k ? 'active' : ''}`} onClick={() => setType(k)}>
+              {v}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="field">
+        <label>Título</label>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Breve descripción" autoFocus />
+      </div>
+      <div className="field">
+        <label>Detalles <span className="hint">(opcional)</span></label>
+        <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} />
+      </div>
+      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+        <button className="btn btn-sm btn-ghost" onClick={onCancel} disabled={saving}>Cancelar</button>
+        <button className="btn btn-sm btn-primary" onClick={handleSubmit} disabled={saving || !title.trim()}>
+          {saving ? 'Guardando…' : 'Guardar'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// AddPersonModal
+// =====================================================================
+function AddPersonModal({ onClose, onCreate }) {
+  const [personType, setPersonType] = useState('individual');
+  const [form, setForm] = useState({
+    first_name: '',
+    last_name: '',
+    organization_name: '',
+    phone: '',
+    email: '',
+    status: 'visitor',
+    pastoral_note: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState({});
+
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+  const handleSubmit = async () => {
+    const errs = {};
+    if (personType === 'individual') {
+      if (!form.first_name?.trim() && !form.last_name?.trim()) {
+        errs.name = 'Requiere al menos nombre o apellido';
+      }
+    } else {
+      if (!form.organization_name?.trim()) errs.org = 'Nombre de organización requerido';
+    }
+    if (form.email && !EMAIL_REGEX.test(form.email)) errs.email = 'Email inválido';
+    if (Object.keys(errs).length) {
+      setErrors(errs);
+      return;
+    }
+    setErrors({});
+    setSaving(true);
+    await onCreate({ ...form, person_type: personType });
+    setSaving(false);
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>Agregar persona</h3>
+            <p>Captura la información esencial. Podrás completar el perfil después.</p>
+          </div>
+          <button className="icon-btn" onClick={onClose}><Icon name="x" /></button>
+        </div>
+        <div className="modal-body">
+          <div className="field" style={{ marginBottom: 14 }}>
+            <label>Tipo de registro</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                type="button"
+                className={`chip ${personType === 'individual' ? 'active' : ''}`}
+                onClick={() => setPersonType('individual')}
+              >
+                <Icon name="user" size={12} /> Individuo
+              </button>
+              <button
+                type="button"
+                className={`chip ${personType === 'organization' ? 'active' : ''}`}
+                onClick={() => setPersonType('organization')}
+              >
+                <Icon name="folder" size={12} /> Organización
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            {personType === 'individual' ? (
+              <>
+                <div className="field">
+                  <label>Nombre</label>
+                  <input value={form.first_name} onChange={set('first_name')} placeholder="María" autoFocus />
+                </div>
+                <div className="field">
+                  <label>Apellido</label>
+                  <input value={form.last_name} onChange={set('last_name')} placeholder="González" />
+                </div>
+                {errors.name && (
+                  <div style={{ gridColumn: '1 / -1', color: 'var(--error)', fontSize: 12 }}>{errors.name}</div>
+                )}
+              </>
+            ) : (
+              <div className="field" style={{ gridColumn: '1 / -1' }}>
+                <label>Nombre de organización</label>
+                <input value={form.organization_name} onChange={set('organization_name')} placeholder="ABC Construction LLC" autoFocus />
+                {errors.org && <div style={{ color: 'var(--error)', fontSize: 12 }}>{errors.org}</div>}
+              </div>
+            )}
+            <div className="field">
+              <label>Teléfono</label>
+              <input value={form.phone} onChange={set('phone')} placeholder="(305) 555-0000" />
+            </div>
+            <div className="field">
+              <label>Email</label>
+              <input type="email" value={form.email} onChange={set('email')} placeholder="email@ejemplo.com" />
+              {errors.email && <div style={{ color: 'var(--error)', fontSize: 12 }}>{errors.email}</div>}
+            </div>
+            <div className="field" style={{ gridColumn: '1 / -1' }}>
+              <label>Tipo</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {Object.entries(STATUS_TO_UI).map(([dbVal, label]) => (
+                  <button
+                    key={dbVal}
+                    type="button"
+                    className={`chip ${form.status === dbVal ? 'active' : ''}`}
+                    onClick={() => setForm({ ...form, status: dbVal })}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="field" style={{ gridColumn: '1 / -1' }}>
+              <label>Notas <span className="hint">(opcional)</span></label>
+              <textarea
+                value={form.pastoral_note}
+                onChange={set('pastoral_note')}
+                placeholder="Observaciones pastorales, contexto familiar, etc."
+              />
+            </div>
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>
+            Cancelar
+          </button>
+          <button className="btn btn-primary" onClick={handleSubmit} disabled={saving}>
+            <Icon name="check" size={14} /> {saving ? 'Guardando…' : 'Guardar persona'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// Mini-components
+// =====================================================================
+function Section({ title, children }) {
+  return (
+    <div>
+      <div
+        style={{
+          fontSize: 11, fontWeight: 700, color: 'var(--muted)',
+          textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 10,
+        }}
+      >
+        {title}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{children}</div>
+    </div>
+  );
+}
+
+function InfoRow({ icon, label, value, highlight }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' }}>
+      <div
+        style={{
+          width: 30, height: 30, borderRadius: 8,
+          background: highlight ? 'var(--coffee-bg)' : 'var(--bg-2)',
+          color: highlight ? 'var(--coffee)' : 'var(--muted)',
+          display: 'grid', placeItems: 'center', flexShrink: 0,
+        }}
+      >
+        <Icon name={icon} size={14} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 11, color: 'var(--muted)' }}>{label}</div>
+        <div style={{ fontSize: 13, fontWeight: 500, wordBreak: 'break-word' }}>{value}</div>
+      </div>
+    </div>
+  );
+}
+
+function FamilyRow({ name, rel, status }) {
+  const RELATIONSHIPS = {
+    head: 'Cabeza', spouse: 'Cónyuge', child: 'Hijo/a',
+    parent: 'Padre/Madre', sibling: 'Hermano/a',
+    grandparent: 'Abuelo/a', other: 'Otro', member: 'Miembro',
+  };
+  const i = name.split(' ').filter(Boolean).slice(0, 2).map((n) => n[0]).join('').toUpperCase();
+  return (
+    <div
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '6px 8px', borderRadius: 8, background: 'var(--bg)',
+      }}
+    >
+      <div className="avatar sm">{i}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 500 }}>{name}</div>
+        <div style={{ fontSize: 11, color: 'var(--muted)' }}>{RELATIONSHIPS[rel] || rel}</div>
+      </div>
+      {status && <PersonBadge status={status} />}
+    </div>
+  );
+}
+
+function MiniStat({ label, value, success }) {
+  return (
+    <div
+      style={{
+        padding: 12, borderRadius: 10, background: 'var(--bg)',
+        border: '1px solid var(--border-soft)',
+      }}
+    >
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>{label}</div>
+      <div
+        style={{
+          fontSize: 14, fontWeight: 700,
+          color: success ? 'var(--success)' : 'var(--text)',
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
