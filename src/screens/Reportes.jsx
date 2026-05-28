@@ -14,8 +14,16 @@ import {
 } from '../api/reports.js';
 import { listFunds } from '../api/funds.js';
 import { listCampaigns } from '../api/campaigns.js';
-import { exportDonationsToExcel } from '../lib/exportExcel.js';
+import {
+  exportDonationsToExcel,
+  exportReceiptsToExcel,
+  exportRecurringToExcel,
+  exportLargeDonationsToExcel,
+  exportFundsReportToExcel,
+} from '../lib/exportExcel.js';
+import { exportReportPdf } from '../lib/exportPdf.js';
 import { generateAnnualStatement } from '../api/receipts.js';
+import { listDonations } from '../api/donations.js';
 import { listPeople, personDisplayName } from '../api/people.js';
 import { formatDate } from '../lib/formatters.js';
 
@@ -25,6 +33,7 @@ const MONTH_LABEL = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Se
 export function ReportesScreen({ onToast }) {
   const { churchId } = useChurch();
   const { user } = useAuth();
+  const { church } = useChurch();
   const { can } = useRole();
 
   const [tab, setTab] = useState('Resumen');
@@ -93,12 +102,74 @@ export function ReportesScreen({ onToast }) {
     }
   };
 
-  const handleExportPdf = () => {
-    onToast({ tone: 'info', icon: 'info', title: 'PDF pendiente', sub: 'Generación de PDF requiere librería adicional (Fase 11+).' });
+  const handleExportPdf = async () => {
+    setExporting(true);
+    try {
+      const donations = await listDonations(churchId, {
+        dateStart: dateStartISO, dateEnd: dateEndISO,
+        fund_id: filters.fundId || undefined,
+        campaign_id: filters.campaignId || undefined,
+        limit: 5000,
+      });
+      const result = await exportReportPdf({
+        church, kpis, donations,
+        filters: { dateStart: filters.dateStart, dateEnd: filters.dateEnd },
+      });
+      onToast({ title: 'PDF descargado', sub: `${result.filename} (${result.rowCount} donaciones)` });
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error al generar PDF', sub: e.message });
+    } finally {
+      setExporting(false);
+    }
   };
 
-  const handleSendEmail = () => {
-    onToast({ tone: 'info', icon: 'info', title: 'Email pendiente', sub: 'El envío por email se activará al configurar Resend (Edge Function).' });
+  // Per-row exports for the "Reportes disponibles" table
+  const handleRowExport = async (reportKey) => {
+    setExporting(true);
+    try {
+      let result;
+      switch (reportKey) {
+        case 'monthly':
+          // Last month's donations
+          const now = new Date();
+          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+          result = await exportDonationsToExcel(churchId, { dateStart: monthStart }, `reporte-mensual-${new Date().toISOString().slice(0, 10)}.xlsx`);
+          break;
+        case 'by_fund':
+          result = await exportFundsReportToExcel(churchId, { dateStart: dateStartISO, dateEnd: dateEndISO });
+          break;
+        case 'annual':
+          setShowAnnualModal(true);
+          setExporting(false);
+          return;
+        case 'receipts':
+          result = await exportReceiptsToExcel(churchId);
+          break;
+        case 'recurring':
+          result = await exportRecurringToExcel(churchId);
+          break;
+        case 'large':
+          result = await exportLargeDonationsToExcel(churchId, 500);
+          break;
+        default:
+          throw new Error('Reporte desconocido: ' + reportKey);
+      }
+      if (result) {
+        onToast({ title: `${result.filename}`, sub: `${result.rowCount} fila${result.rowCount === 1 ? '' : 's'} exportada${result.rowCount === 1 ? '' : 's'}` });
+      }
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error al exportar', sub: e.message });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleSendEmail = (reportKey) => {
+    onToast({
+      tone: 'info', icon: 'info',
+      title: 'Envío por email pendiente',
+      sub: 'Se activa al configurar Resend (Edge Function). Por ahora descarga el reporte y envíalo manualmente.',
+    });
   };
 
   return (
@@ -109,11 +180,13 @@ export function ReportesScreen({ onToast }) {
           <p className="page-sub">Consulta el comportamiento de las donaciones y campañas</p>
         </div>
         <div className="page-actions">
-          <button className="btn btn-secondary" onClick={handleExportPdf}><Icon name="download" size={14} /> Descargar PDF</button>
+          <button className="btn btn-secondary" onClick={handleExportPdf} disabled={exporting || !can('reports.export') || !kpis}>
+            <Icon name="download" size={14} /> {exporting ? 'Generando…' : 'Descargar PDF'}
+          </button>
           <button className="btn btn-secondary" onClick={handleExportExcel} disabled={exporting || !can('reports.export')}>
             <Icon name="folder" size={14} /> {exporting ? 'Exportando…' : 'Exportar Excel'}
           </button>
-          <button className="btn btn-secondary" onClick={handleSendEmail}><Icon name="send" size={14} /> Enviar por email</button>
+          <button className="btn btn-secondary" onClick={() => handleSendEmail()}><Icon name="send" size={14} /> Enviar por email</button>
         </div>
       </div>
 
@@ -237,14 +310,14 @@ export function ReportesScreen({ onToast }) {
         </div>
         <div>
           {[
-            { name: 'Reporte mensual', desc: 'Resumen de donaciones del último mes', icon: 'calendar' },
-            { name: 'Donaciones por fondo', desc: 'Distribución por fondo en el período', icon: 'folder' },
-            { name: 'Estado anual de contribuciones', desc: 'Comprobante fiscal anual por donante', icon: 'receipt' },
-            { name: 'Recibos enviados', desc: 'Lista de envíos de recibos del mes', icon: 'mail' },
-            { name: 'Donantes recurrentes', desc: 'Donantes con contribución programada', icon: 'refresh' },
-            { name: 'Donaciones grandes', desc: 'Donaciones por encima de $500', icon: 'star' },
+            { key: 'monthly',   name: 'Reporte mensual',                desc: 'Donaciones del mes en curso', icon: 'calendar' },
+            { key: 'by_fund',   name: 'Donaciones por fondo',           desc: 'Agregado por fondo con totales y %', icon: 'folder' },
+            { key: 'annual',    name: 'Estado anual de contribuciones', desc: 'Comprobante fiscal anual por donante', icon: 'receipt' },
+            { key: 'receipts',  name: 'Recibos enviados',               desc: 'Listado completo de recibos generados', icon: 'mail' },
+            { key: 'recurring', name: 'Donantes recurrentes',           desc: 'Donantes con contribución programada', icon: 'refresh' },
+            { key: 'large',     name: 'Donaciones grandes',             desc: 'Donaciones >= $500 ordenadas por monto', icon: 'star' },
           ].map((r, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 20px', borderTop: i === 0 ? 'none' : '1px solid var(--border-soft)' }}>
+            <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 20px', borderTop: i === 0 ? 'none' : '1px solid var(--border-soft)' }}>
               <div style={{ width: 36, height: 36, borderRadius: 10, background: 'var(--coffee-bg)', color: 'var(--coffee)', display: 'grid', placeItems: 'center' }}>
                 <Icon name={r.icon} size={14} />
               </div>
@@ -252,8 +325,10 @@ export function ReportesScreen({ onToast }) {
                 <div style={{ fontWeight: 600, fontSize: 13 }}>{r.name}</div>
                 <div style={{ fontSize: 11, color: 'var(--muted)' }}>{r.desc}</div>
               </div>
-              <button className="btn btn-sm btn-ghost" onClick={handleExportExcel}><Icon name="folder" size={12} /> Excel</button>
-              <button className="btn btn-sm btn-ghost" onClick={handleSendEmail}><Icon name="send" size={12} /> Enviar</button>
+              <button className="btn btn-sm btn-ghost" onClick={() => handleRowExport(r.key)} disabled={exporting}>
+                <Icon name={r.key === 'annual' ? 'plus' : 'folder'} size={12} /> {r.key === 'annual' ? 'Generar' : 'Excel'}
+              </button>
+              <button className="btn btn-sm btn-ghost" onClick={() => handleSendEmail(r.key)}><Icon name="send" size={12} /> Enviar</button>
             </div>
           ))}
         </div>

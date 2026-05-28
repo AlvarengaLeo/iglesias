@@ -19,13 +19,14 @@ import { listCampaigns, listCampaignProgress, createCampaign, setCampaignVisibil
 import { listAllRecurring } from '../api/recurring.js';
 import { listReceipts, resendReceipt, RECEIPT_STATUS_LABEL, RECEIPT_STATUS_TONE, RESEND_REASON_LABEL } from '../api/receipts.js';
 import { listPeople, personDisplayName, personInitials } from '../api/people.js';
+import { exportReceiptPdf } from '../lib/exportPdf.js';
 import { dollarsToCents } from '../lib/money.js';
 import { formatDate, formatRelativeTime, shortenId } from '../lib/formatters.js';
 
 const formatMoney = (cents) => fmt(Number(cents) / 100);
 
 export function DonacionesScreen({ onToast }) {
-  const { churchId } = useChurch();
+  const { church, churchId } = useChurch();
   const { user } = useAuth();
   const { can } = useRole();
 
@@ -156,6 +157,7 @@ export function DonacionesScreen({ onToast }) {
       {selected && (
         <DonationDrawer
           donationId={selected.id}
+          church={church}
           onClose={() => setSelected(null)}
           onToast={onToast}
           onRefresh={refetchAll}
@@ -403,7 +405,7 @@ function ReceiptsTable({ receipts }) {
   );
 }
 
-function DonationDrawer({ donationId, onClose, onToast, onRefresh, canResend }) {
+function DonationDrawer({ donationId, church, onClose, onToast, onRefresh, canResend }) {
   const [detail, setDetail] = useState(null);
   const [showResend, setShowResend] = useState(false);
 
@@ -459,7 +461,19 @@ function DonationDrawer({ donationId, onClose, onToast, onRefresh, canResend }) 
           {d.receipt && (
             <Section title={`Recibo ${d.receipt.receipt_number}`}>
               <div style={{ display: 'flex', gap: 6 }}>
-                <button className="btn btn-sm btn-secondary" onClick={() => onToast({ tone: 'info', icon: 'info', title: 'PDF pendiente', sub: 'Generación PDF en una fase futura.' })}>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  onClick={async () => {
+                    try {
+                      const result = await exportReceiptPdf({
+                        donation: d, receipt: d.receipt, deliveries: detail.deliveries, church,
+                      });
+                      onToast({ title: 'Recibo descargado', sub: result.filename });
+                    } catch (e) {
+                      onToast({ tone: 'error', icon: 'alert', title: 'Error al generar PDF', sub: e.message });
+                    }
+                  }}
+                >
                   <Icon name="download" size={12} /> PDF
                 </button>
                 {canResend && (
