@@ -1,0 +1,29 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Vite
+.vite/
+
+# Supabase
+supabase/.branches/
+supabase/.temp/
+supabase/seed.local.sql
+
+# Temp PDFs and exports
+*.tmp
+exports/
+receipts-tmp/

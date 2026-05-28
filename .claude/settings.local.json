@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"C:/Users/leo-e/Desktop/iglesia/screens\")",
+      "Bash(cp /tmp/iglesia-design/iglesia/project/*.html \"C:/Users/leo-e/Desktop/iglesia/\")",
+      "Bash(cp /tmp/iglesia-design/iglesia/project/*.css \"C:/Users/leo-e/Desktop/iglesia/\")",
+      "Bash(cp /tmp/iglesia-design/iglesia/project/*.js \"C:/Users/leo-e/Desktop/iglesia/\")",
+      "Bash(cp /tmp/iglesia-design/iglesia/project/screens/*.js \"C:/Users/leo-e/Desktop/iglesia/screens/\")",
+      "Bash(start *)"
+    ]
+  }
+}

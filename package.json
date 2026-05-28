@@ -1,0 +1,23 @@
+{
+  "name": "sistema-iglesia",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CRM administrativo para iglesias pequeñas y medianas (hispanas/bilingües en EE.UU.)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 5173",
+    "seed": "node --env-file=.env.local supabase/seed.js",
+    "seed:reset": "node --env-file=.env.local supabase/seed.js --reset"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.106.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.10"
+  }
+}

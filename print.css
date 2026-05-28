@@ -1,0 +1,72 @@
+/* Print-only styles for the CRM PDF export */
+
+@page {
+  size: 1500px 1100px;
+  margin: 0;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #fff;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+/* Each screen on its own page */
+.print-page {
+  width: 1500px;
+  min-height: 1100px;
+  page-break-after: always;
+  break-after: page;
+  overflow: hidden;
+  background: var(--bg);
+  position: relative;
+}
+.print-page:last-child {
+  page-break-after: auto;
+  break-after: auto;
+}
+
+/* Lock the sidebar so it doesn't try to be sticky inside print */
+.print-page .sidebar {
+  position: relative !important;
+  top: auto !important;
+  height: 1100px !important;
+}
+.print-page .topbar {
+  position: relative !important;
+  top: auto !important;
+}
+.print-page .main {
+  height: 1100px;
+  overflow: hidden;
+}
+
+/* No interactivity hint elements that would imply scroll */
+.print-page .toast-wrap,
+.print-page .drawer-overlay,
+.print-page .modal-overlay {
+  display: none !important;
+}
+
+/* Tighter card spacing for print so dashboards fit */
+.print-page .page {
+  padding: 24px 32px 32px;
+}
+
+/* Disable hover dimming on charts so the static state looks complete */
+.print-page svg rect[fill-opacity],
+.print-page svg path[fill-opacity] {
+  opacity: 1 !important;
+}
+
+/* Force chart rendering at full width even before ResizeObserver fires */
+.print-page svg.chart-svg {
+  width: 100% !important;
+}
+
+@media print {
+  body { background: #fff; }
+  .print-page { box-shadow: none; }
+}
