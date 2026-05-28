@@ -11,6 +11,19 @@ export function AuthProvider({ children }) {
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
+      // Detectar clock skew: si el JWT exp parece "ya expirado" pero acabamos
+      // de obtener una sesión válida, el reloj del cliente está mal sincronizado.
+      // Sin esta detección entraríamos en loop de refresh.
+      if (data.session) {
+        const skew = Math.floor(Date.now() / 1000) - data.session.expires_at;
+        if (skew > 60) {
+          console.warn(
+            `[supabase auth] Clock skew detectado: ${Math.floor(skew / 60)} min. ` +
+            `Tu reloj del sistema parece adelantado. ` +
+            `Sincroniza la hora del sistema operativo para evitar logouts continuos.`
+          );
+        }
+      }
       setSession(data.session);
       setLoading(false);
     });
@@ -28,16 +41,12 @@ export function AuthProvider({ children }) {
       setSession(s);
     });
 
-    // Cuando el usuario vuelve a la pestaña después de dejarla abierta,
-    // forzamos refresh para evitar que la próxima query falle por token expirado.
+    // Cuando vuelves a la pestaña sólo re-sincronizamos lectura del state
+    // de Supabase (sin forzar refresh — eso lo hace el autoRefreshToken solo).
     const onVisible = async () => {
       if (document.visibilityState !== 'visible') return;
-      try {
-        const { data } = await supabase.auth.refreshSession();
-        if (mounted && data?.session) setSession(data.session);
-      } catch {
-        // Si falla el refresh, dejamos que onAuthStateChange lo maneje
-      }
+      const { data } = await supabase.auth.getSession();
+      if (mounted && data?.session) setSession(data.session);
     };
     document.addEventListener('visibilitychange', onVisible);
 

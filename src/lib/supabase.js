@@ -16,10 +16,12 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     detectSessionInUrl: true,
     storageKey: 'iglesia-auth',
     storage: typeof window !== 'undefined' ? window.localStorage : undefined,
-    flowType: 'pkce',
+    // NOTA: flowType: 'pkce' rompe sesiones implicit-flow existentes —
+    // el SDK refresca el token antes de cada query buscando el code_verifier
+    // que no existe, generando un loop de 13+ refresh por reload.
+    // Default ('implicit') es estable para nuestro caso.
   },
   global: {
-    // Keep connection alive longer
     headers: { 'X-Client-Info': 'iglesia-crm' },
   },
 });
