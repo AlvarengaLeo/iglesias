@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { Sidebar } from './Sidebar.jsx';
 import { Topbar } from './Topbar.jsx';
 import { Toast } from './Toast.jsx';
-import { ClockSkewBanner } from './ClockSkewBanner.jsx';
 import { InicioScreen } from '../screens/Inicio.jsx';
 import { PersonasScreen } from '../screens/Personas.jsx';
 import { DonacionesScreen } from '../screens/Donaciones.jsx';
@@ -65,7 +64,6 @@ export function AppShell() {
 
   return (
     <div className={`app ${mobileNavOpen ? 'mobile-nav-open' : ''}`}>
-      <ClockSkewBanner />
       <Sidebar
         current={screen}
         onNavigate={setScreen}
