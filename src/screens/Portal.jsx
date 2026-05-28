@@ -1,408 +1,623 @@
-// PortalScreen — NOTA Fase 5+: datos hardcoded.
-// La conexion a Supabase entra en la fase del modulo correspondiente.
-import { useState } from 'react';
+// PortalScreen — Fase 8: conectado a Supabase.
+// Editor de 6 secciones que actualiza portal_settings.draft_data.
+// Guardar persiste draft, Publicar via rpc_publish_portal, Descartar via rpc_discard_portal_draft.
+// Service times reales desde tabla. Toggle campaign.is_visible_on_portal.
+
+import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../components/Icon.jsx';
 import { Badge } from '../components/Badge.jsx';
+import { useChurch } from '../hooks/useChurch.js';
+import { useRole } from '../hooks/useRole.js';
+import {
+  getPortalSettings, saveDraft, publishPortal, discardDraft, hasUnsavedChanges,
+} from '../api/portal.js';
+import {
+  listServiceTimes, createServiceTime, updateServiceTime, deleteServiceTime, DAYS,
+} from '../api/serviceTimes.js';
+import { listFunds } from '../api/funds.js';
+import { listCampaigns, setCampaignVisibility } from '../api/campaigns.js';
+import { formatDate } from '../lib/formatters.js';
 
-// Portal screen — editor with live preview
+const SECTIONS = [
+  { id: 'identidad', label: 'Identidad', icon: 'sparkle' },
+  { id: 'inicio',    label: 'Inicio',    icon: 'home' },
+  { id: 'horarios',  label: 'Horarios',  icon: 'clock' },
+  { id: 'donaciones',label: 'Donaciones',icon: 'dollar' },
+  { id: 'campanas',  label: 'Campañas visibles', icon: 'target' },
+  { id: 'contacto',  label: 'Contacto',  icon: 'mail' },
+];
 
 export function PortalScreen({ onToast }) {
-  const [section, setSection] = useState('Identidad');
-  const [device, setDevice] = useState('desktop');
-  const [hasChanges, setHasChanges] = useState(true);
+  const { church, churchId } = useChurch();
+  const { can } = useRole();
+  const canEdit = can('portal.write');
+  const canPublish = can('portal.publish');
 
-  const sections = [
-    { id: 'Identidad', icon: 'sparkle' },
-    { id: 'Inicio', icon: 'home' },
-    { id: 'Horarios', icon: 'clock' },
-    { id: 'Donaciones', icon: 'handHeart' },
-    { id: 'Campañas visibles', icon: 'target' },
-    { id: 'Contacto', icon: 'phone' },
-  ];
+  const [section, setSection] = useState('identidad');
+  const [device, setDevice] = useState('desktop');
+  const [settings, setSettings] = useState(null);
+  const [draft, setDraft] = useState(null); // local working copy
+  const [serviceTimes, setServiceTimes] = useState([]);
+  const [funds, setFunds] = useState([]);
+  const [campaigns, setCampaigns] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  const refetch = async () => {
+    if (!churchId) return;
+    try {
+      const [s, st, f, c] = await Promise.all([
+        getPortalSettings(churchId),
+        listServiceTimes(churchId),
+        listFunds(churchId),
+        listCampaigns(churchId, { activeOnly: true }),
+      ]);
+      setSettings(s);
+      setDraft(s.draft_data || {});
+      setServiceTimes(st);
+      setFunds(f);
+      setCampaigns(c);
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error al cargar portal', sub: e.message });
+    }
+  };
+
+  useEffect(() => { refetch(); }, [churchId]);
+
+  const isDirty = useMemo(() => {
+    if (!settings || !draft) return false;
+    return JSON.stringify(draft) !== JSON.stringify(settings.draft_data);
+  }, [draft, settings]);
+
+  const hasUnpublished = useMemo(() => {
+    if (!settings) return false;
+    return hasUnsavedChanges(settings);
+  }, [settings]);
+
+  const publishStatusBadge = useMemo(() => {
+    if (!settings) return null;
+    if (hasUnpublished || isDirty) return <Badge tone="warning" dot>Cambios sin publicar</Badge>;
+    if (settings.publish_status === 'published') return <Badge tone="success" dot>Publicado</Badge>;
+    return <Badge tone="muted" dot>Borrador</Badge>;
+  }, [settings, hasUnpublished, isDirty]);
+
+  const updateDraft = (sectionKey, patch) => {
+    setDraft({
+      ...draft,
+      [sectionKey]: { ...(draft[sectionKey] || {}), ...patch },
+    });
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const updated = await saveDraft(churchId, draft);
+      setSettings(updated);
+      onToast({ title: 'Cambios guardados correctamente', sub: 'Tu portal sigue en borrador hasta que publiques.' });
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error al guardar', sub: e.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handlePublish = async () => {
+    if (isDirty) {
+      // Save first
+      await handleSave();
+    }
+    if (!window.confirm('¿Publicar los cambios al portal público? Tus visitantes verán las actualizaciones inmediatamente.')) return;
+    setSaving(true);
+    try {
+      await publishPortal(churchId);
+      onToast({ title: 'Portal publicado correctamente', sub: 'Tus cambios ya son visibles para tu comunidad.' });
+      await refetch();
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error al publicar', sub: e.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDiscard = async () => {
+    if (!window.confirm('¿Descartar los cambios sin publicar? Esta acción no se puede deshacer.')) return;
+    setSaving(true);
+    try {
+      await discardDraft(churchId);
+      onToast({ title: 'Cambios descartados', sub: 'El borrador volvió al estado publicado.' });
+      await refetch();
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error al descartar', sub: e.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!settings || !draft) {
+    return (
+      <div className="page">
+        <div className="page-header">
+          <h2 className="page-greeting">Portal</h2>
+        </div>
+        <div className="card" style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>Cargando…</div>
+      </div>
+    );
+  }
 
   return (
     <div className="page">
       <div className="page-header">
         <div className="page-header-text">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-            <h2 className="page-greeting" style={{ margin: 0 }}>Portal</h2>
-            <Badge tone={hasChanges ? 'warning' : 'success'} dot>{hasChanges ? 'Cambios sin publicar' : 'Publicado'}</Badge>
-          </div>
-          <p className="page-sub">Administra la información pública de tu iglesia · iglesiacr.app/casaderestauracion</p>
+          <h2 className="page-greeting">Portal</h2>
+          <p className="page-sub">Administra la información pública de tu iglesia · {publishStatusBadge}</p>
         </div>
         <div className="page-actions">
-          <button className="btn btn-ghost"><Icon name="eye" size={14} /> Vista previa</button>
-          <button className="btn btn-secondary" onClick={() => onToast({ title: 'Cambios guardados', sub: 'Tu portal sigue en borrador hasta que publiques.' })}><Icon name="save" size={14} /> Guardar cambios</button>
-          <button className="btn btn-primary" onClick={() => { setHasChanges(false); onToast({ title: 'Portal publicado', sub: 'Los cambios ya son visibles para tu comunidad.' }); }}>
-            <Icon name="rocket" size={14} /> Publicar portal
+          {(isDirty || hasUnpublished) && (
+            <button className="btn btn-ghost" onClick={handleDiscard} disabled={!canEdit || saving}>
+              <Icon name="x" size={14} /> Descartar
+            </button>
+          )}
+          <button className="btn btn-secondary" onClick={handleSave} disabled={!canEdit || !isDirty || saving}>
+            <Icon name="save" size={14} /> {saving ? 'Guardando…' : 'Guardar'}
+          </button>
+          <button className="btn btn-primary" onClick={handlePublish} disabled={!canPublish || saving}>
+            <Icon name="upload" size={14} /> Publicar portal
           </button>
         </div>
       </div>
 
-      {/* Unsaved alert */}
-      {hasChanges && (
-        <div className="banner" style={{ marginBottom: 16 }}>
+      {(isDirty || hasUnpublished) && (
+        <div className="banner warning" style={{ marginBottom: 16, padding: 12, borderRadius: 10, background: 'var(--warning-bg)', color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #F0DCC2' }}>
           <Icon name="alert" />
-          <div>
-            <strong>Hay cambios sin publicar.</strong> Tu comunidad aún ve la versión anterior del portal hasta que publiques.
-          </div>
-          <div className="banner-actions">
-            <button className="btn btn-sm btn-ghost">Descartar</button>
-            <button className="btn btn-sm btn-coffee" onClick={() => { setHasChanges(false); onToast({ title: 'Portal publicado' }); }}>Publicar ahora</button>
-          </div>
+          Hay cambios sin {isDirty ? 'guardar' : 'publicar'}. {isDirty ? 'Guarda primero para crear un borrador.' : 'Tus visitantes aún ven la versión publicada.'}
         </div>
       )}
 
-      {/* Two column */}
-      <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: 16 }}>
-        {/* Left — sections + editor */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div className="card">
-            <div style={{ padding: '12px 8px' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em', padding: '4px 12px 8px' }}>Secciones del portal</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {sections.map(s => (
-                  <button
-                    key={s.id}
-                    onClick={() => setSection(s.id)}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      padding: '10px 12px',
-                      border: 'none',
-                      background: section === s.id ? 'var(--bg-2)' : 'transparent',
-                      borderRadius: 8,
-                      color: section === s.id ? 'var(--text)' : 'var(--muted)',
-                      fontWeight: section === s.id ? 700 : 500,
-                      fontSize: 13,
-                      textAlign: 'left',
-                    }}
-                  >
-                    <Icon name={s.icon} size={15} />
-                    <span style={{ flex: 1 }}>{s.id}</span>
-                    {section === s.id && <Icon name="chevronRight" size={14} />}
-                  </button>
-                ))}
-              </div>
-            </div>
+      <div className="grid grid-12" style={{ gap: 16 }}>
+        {/* Left: sections nav + editor */}
+        <div className="col-span-7" style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 16 }}>
+          <div className="card" style={{ padding: 8, height: 'fit-content' }}>
+            {SECTIONS.map((s) => (
+              <button
+                key={s.id}
+                className={`nav-item ${section === s.id ? 'active' : ''}`}
+                style={{ color: section === s.id ? 'var(--coffee)' : 'var(--text)', background: section === s.id ? 'var(--coffee-bg)' : 'transparent' }}
+                onClick={() => setSection(s.id)}
+              >
+                <Icon name={s.icon} size={14} /> {s.label}
+              </button>
+            ))}
           </div>
 
-          <div className="card">
-            <div className="card-header">
-              <h3>Editar · {section}</h3>
-            </div>
-            <div style={{ padding: 20 }}>
-              {section === 'Identidad' && <IdentidadEditor />}
-              {section === 'Inicio' && <InicioEditor />}
-              {section === 'Horarios' && <HorariosEditor />}
-              {section === 'Donaciones' && <DonacionesEditor />}
-              {section === 'Campañas visibles' && <CampañasEditor />}
-              {section === 'Contacto' && <ContactoEditor />}
-            </div>
+          <div className="card" style={{ padding: 24 }}>
+            {section === 'identidad' && <IdentidadEditor draft={draft.identity || {}} church={church} onChange={(p) => updateDraft('identity', p)} canEdit={canEdit} onToast={onToast} />}
+            {section === 'inicio' && <InicioEditor draft={draft.hero || {}} onChange={(p) => updateDraft('hero', p)} canEdit={canEdit} onToast={onToast} />}
+            {section === 'horarios' && <HorariosEditor serviceTimes={serviceTimes} churchId={churchId} canEdit={canEdit} onToast={onToast} onRefresh={refetch} />}
+            {section === 'donaciones' && <DonacionesEditor draft={draft.donations || {}} funds={funds} onChange={(p) => updateDraft('donations', p)} canEdit={canEdit} />}
+            {section === 'campanas' && <CampanasEditor campaigns={campaigns} onToast={onToast} onRefresh={refetch} canEdit={canEdit} />}
+            {section === 'contacto' && <ContactoEditor draft={draft.contact || {}} onChange={(p) => updateDraft('contact', p)} canEdit={canEdit} />}
           </div>
         </div>
 
-        {/* Right — Live preview */}
-        <div style={{ position: 'sticky', top: 88, alignSelf: 'flex-start' }}>
-          <div className="card" style={{ padding: 16 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <div style={{ fontSize: 12, color: 'var(--muted)' }}>Vista previa en vivo</div>
-              <div className="tabs">
-                <button className={`tab ${device === 'desktop' ? 'active' : ''}`} onClick={() => setDevice('desktop')}><Icon name="monitor" size={12} /> Escritorio</button>
-                <button className={`tab ${device === 'mobile' ? 'active' : ''}`} onClick={() => setDevice('mobile')}><Icon name="smartphone" size={12} /> Móvil</button>
-              </div>
-            </div>
-
-            {device === 'desktop' ? (
-              <div className="browser-frame">
-                <div className="browser-bar">
-                  <div className="browser-dots"><div className="browser-dot"></div><div className="browser-dot"></div><div className="browser-dot"></div></div>
-                  <div className="browser-url">iglesiacr.app/casaderestauracion</div>
-                </div>
-                <DesktopPreview />
-              </div>
-            ) : (
-              <div style={{ padding: 16, background: 'var(--bg-2)', borderRadius: 12, display: 'grid', placeItems: 'center' }}>
-                <div className="phone-frame">
-                  <div className="phone-screen">
-                    <MobilePreview />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+        {/* Right: preview */}
+        <div className="col-span-5">
+          <PortalPreview
+            draft={draft}
+            published={settings.published_data}
+            device={device}
+            onDeviceChange={setDevice}
+            church={church}
+            serviceTimes={serviceTimes}
+            campaigns={campaigns.filter((c) => c.is_visible_on_portal)}
+            funds={funds}
+          />
         </div>
       </div>
     </div>
   );
-};
+}
 
-// ============ Editors ============
-
-const IdentidadEditor = () => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-    <div className="field">
-      <label>Logo</label>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div style={{ width: 64, height: 64, borderRadius: 12, background: 'var(--coffee)', display: 'grid', placeItems: 'center', color: '#fff', fontWeight: 700, fontSize: 18 }}>CR</div>
-        <div style={{ flex: 1 }}>
-          <button className="btn btn-secondary btn-sm"><Icon name="upload" size={12} /> Subir nuevo logo</button>
-          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>PNG o SVG · Mínimo 200×200px</div>
-        </div>
-      </div>
-    </div>
-    <div className="field">
-      <label>Nombre legal</label>
-      <input defaultValue="Iglesia Casa de Restauración Inc." />
-    </div>
-    <div className="field">
-      <label>Nombre público <span className="hint">(aparece en el portal)</span></label>
-      <input defaultValue="Casa de Restauración" />
-    </div>
-    <div className="field">
-      <label>Color principal del portal</label>
-      <div style={{ display: 'flex', gap: 8 }}>
-        {['#1F2B38', '#8A6A4A', '#3D5681', '#4F9D7B', '#C25C5C'].map((c, i) => (
-          <div key={c} style={{
-            width: 36, height: 36, borderRadius: 10,
-            background: c, cursor: 'pointer',
-            border: i === 1 ? '3px solid #fff' : '3px solid transparent',
-            boxShadow: i === 1 ? '0 0 0 2px var(--navy)' : 'none',
-          }}></div>
-        ))}
-      </div>
-    </div>
-  </div>
-);
-
-const InicioEditor = () => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-    <div className="field">
-      <label>Título principal</label>
-      <input defaultValue="Una casa de fe, restauración y comunidad" />
-    </div>
-    <div className="field">
-      <label>Mensaje de bienvenida</label>
-      <textarea rows={3} defaultValue="Somos una iglesia hispana en Miami donde toda familia encuentra un hogar espiritual. Te invitamos a visitarnos cada domingo."></textarea>
-    </div>
-    <div className="field">
-      <label>Imagen principal</label>
-      <div style={{ border: '1.5px dashed var(--border)', borderRadius: 12, padding: 20, textAlign: 'center', background: 'var(--bg)' }}>
-        <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--card)', display: 'grid', placeItems: 'center', margin: '0 auto 10px', color: 'var(--muted)' }}>
-          <Icon name="image" />
-        </div>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>congregacion-domingo.jpg</div>
-        <div style={{ fontSize: 11, color: 'var(--muted)' }}>1920×1080 · 240 KB</div>
-        <button className="btn btn-sm btn-secondary" style={{ marginTop: 10 }}>Cambiar imagen</button>
-      </div>
-    </div>
-    <div className="field">
-      <label>Texto del botón principal</label>
-      <input defaultValue="Donar ahora" />
-    </div>
-  </div>
-);
-
-const HorariosEditor = () => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-    {[
-      { day: 'Domingo', time: '10:00 AM', type: 'Servicio dominical', addr: 'Sede principal' },
-      { day: 'Domingo', time: '6:00 PM', type: 'Servicio bilingüe', addr: 'Sede principal' },
-      { day: 'Miércoles', time: '7:30 PM', type: 'Estudio bíblico', addr: 'Online + presencial' },
-      { day: 'Viernes', time: '7:00 PM', type: 'Jóvenes y adolescentes', addr: 'Salón de jóvenes' },
-    ].map((h, i) => (
-      <div key={i} style={{ display: 'grid', gridTemplateColumns: '90px 90px 1fr auto', gap: 8, padding: 12, background: 'var(--bg)', borderRadius: 10, alignItems: 'center' }}>
-        <input defaultValue={h.day} style={{ padding: '6px 10px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, background: 'var(--card)' }} />
-        <input defaultValue={h.time} style={{ padding: '6px 10px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, background: 'var(--card)' }} />
-        <input defaultValue={h.type} style={{ padding: '6px 10px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, background: 'var(--card)' }} />
-        <button className="btn btn-sm btn-ghost" style={{ padding: 6 }}><Icon name="x" size={14} /></button>
-      </div>
-    ))}
-    <button className="btn btn-secondary" style={{ alignSelf: 'flex-start' }}><Icon name="plus" size={14} /> Agregar reunión</button>
-  </div>
-);
-
-const DonacionesEditor = () => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-    <div className="field">
-      <label>Texto del botón donar</label>
-      <input defaultValue="Donar ahora" />
-    </div>
-    <div className="field">
-      <label>Fondo predeterminado</label>
-      <select><option>Fondo General</option><option>Diezmos</option><option>Ofrendas</option></select>
-    </div>
-    <div className="field">
-      <label>Frecuencias visibles</label>
-      <div style={{ display: 'flex', gap: 6 }}>
-        {[{l:'Única', a:true}, {l:'Mensual', a:true}, {l:'Anual', a:false}].map(f => (
-          <button key={f.l} className={`chip ${f.a ? 'active' : ''}`}>{f.l}</button>
-        ))}
-      </div>
-    </div>
-    <div className="field">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div>
-          <label>Mostrar donaciones recurrentes</label>
-          <div className="hint">Tus donantes podrán configurar aportes automáticos.</div>
-        </div>
-        <div className="toggle on"></div>
-      </div>
-    </div>
-  </div>
-);
-
-const CampañasEditor = () => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-    <div className="hint" style={{ fontSize: 12, color: 'var(--muted)' }}>Selecciona las campañas visibles en el portal público.</div>
-    {[
-      { name: 'Fondo de construcción', raised: 32400, goal: 50000, on: true },
-      { name: 'Misiones 2026', raised: 11200, goal: 12000, on: true },
-      { name: 'Ayuda comunitaria', raised: 1280, goal: 5000, on: false },
-    ].map((c, i) => (
-      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: 'var(--bg)', borderRadius: 10, border: '1px solid var(--border-soft)' }}>
-        <div style={{ width: 36, height: 36, borderRadius: 8, background: 'var(--coffee-bg)', color: 'var(--coffee)', display: 'grid', placeItems: 'center' }}>
-          <Icon name="target" size={16} />
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
-          <div style={{ fontSize: 11, color: 'var(--muted)' }}>${c.raised.toLocaleString()} de ${c.goal.toLocaleString()}</div>
-        </div>
-        <div className={`toggle ${c.on ? 'on' : ''}`}></div>
-      </div>
-    ))}
-  </div>
-);
-
-const ContactoEditor = () => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-    <div className="field"><label>Dirección</label><input defaultValue="2310 SW 27th Ave, Miami FL 33145" /></div>
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-      <div className="field"><label>Teléfono</label><input defaultValue="(305) 555-0100" /></div>
-      <div className="field"><label>Email</label><input defaultValue="hola@casaderestauracion.org" /></div>
-    </div>
-    <div className="field"><label>Enlace de mapa</label><input defaultValue="https://maps.google.com/?q=..." /></div>
-    <div className="field">
-      <label>Redes sociales</label>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {['Facebook', 'Instagram', 'YouTube', 'WhatsApp'].map(r => (
-          <div key={r} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <div style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--bg-2)', display: 'grid', placeItems: 'center', color: 'var(--muted)', fontSize: 11, fontWeight: 600 }}>{r[0]}</div>
-            <input defaultValue={`@casaderestauracion`} style={{ flex: 1, padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
+// ============================================================
+// IdentidadEditor
+// ============================================================
+function IdentidadEditor({ draft, church, onChange, canEdit, onToast }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <H title="Identidad" desc="Cómo aparece tu iglesia en el portal público." />
+      <div className="field">
+        <label>Logo</label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 12, background: draft.logo_url ? `url(${draft.logo_url}) center/cover` : 'var(--coffee)', color: '#fff', display: 'grid', placeItems: 'center', fontWeight: 700 }}>
+            {!draft.logo_url && (church?.public_name || 'CR').split(' ').slice(0,2).map((w) => w[0]).join('').toUpperCase()}
           </div>
-        ))}
+          <button className="btn btn-sm btn-secondary" onClick={() => onToast({ tone: 'info', icon: 'info', title: 'Upload pendiente', sub: 'Subida de logo requiere Supabase Storage (Fase 11+).' })} disabled={!canEdit}>
+            <Icon name="upload" size={12} /> Cambiar logo
+          </button>
+        </div>
+      </div>
+      <div className="field">
+        <label>Nombre público</label>
+        <input value={draft.public_name || church?.public_name || ''} onChange={(e) => onChange({ public_name: e.target.value })} disabled={!canEdit} />
+        <span className="hint">El nombre que aparece en hero, header y URL</span>
+      </div>
+      <div className="field">
+        <label>Color principal</label>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {['#8A6A4A', '#1F2B38', '#3D5681', '#4F9D7B', '#C25C5C', '#864F8C'].map((c) => (
+            <button key={c} type="button" onClick={() => canEdit && onChange({ primary_color: c })} disabled={!canEdit}
+              style={{ width: 36, height: 36, borderRadius: 8, background: c, border: (draft.primary_color || '#8A6A4A') === c ? '3px solid var(--text)' : '1px solid var(--border)', cursor: canEdit ? 'pointer' : 'default' }} />
+          ))}
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+}
 
-// ============ Live Preview ============
+// ============================================================
+// InicioEditor (hero)
+// ============================================================
+function InicioEditor({ draft, onChange, canEdit, onToast }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <H title="Inicio (hero)" desc="La sección principal del portal público." />
+      <div className="field">
+        <label>Título principal</label>
+        <input value={draft.title || ''} onChange={(e) => onChange({ title: e.target.value })} disabled={!canEdit} placeholder="Una casa de fe..." maxLength={120} />
+      </div>
+      <div className="field">
+        <label>Mensaje de bienvenida</label>
+        <textarea value={draft.message || ''} onChange={(e) => onChange({ message: e.target.value })} disabled={!canEdit} rows={4} maxLength={500} />
+        <span className="hint">{(draft.message || '').length} / 500 caracteres</span>
+      </div>
+      <div className="field">
+        <label>Texto del botón principal</label>
+        <input value={draft.cta_text || ''} onChange={(e) => onChange({ cta_text: e.target.value })} disabled={!canEdit} placeholder="Donar ahora" />
+      </div>
+      <div className="field">
+        <label>Imagen principal</label>
+        <button className="btn btn-sm btn-secondary" onClick={() => onToast({ tone: 'info', icon: 'info', title: 'Upload pendiente', sub: 'Subida de imagen requiere Supabase Storage (Fase 11+).' })} disabled={!canEdit}>
+          <Icon name="image" size={12} /> {draft.image_url ? 'Cambiar imagen' : 'Subir imagen'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
-const DesktopPreview = () => (
-  <div style={{ background: '#fff', fontSize: 12 }}>
-    {/* Top nav */}
-    <div style={{ display: 'flex', alignItems: 'center', padding: '14px 28px', borderBottom: '1px solid #EEF0F3' }}>
-      <div style={{ width: 28, height: 28, borderRadius: 8, background: 'var(--coffee)', color: '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 11 }}>CR</div>
-      <div style={{ marginLeft: 10, fontWeight: 700, color: 'var(--text)' }}>Casa de Restauración</div>
-      <div style={{ marginLeft: 'auto', display: 'flex', gap: 18, fontSize: 11, color: 'var(--muted)' }}>
-        <span>Inicio</span><span>Horarios</span><span>Donar</span><span>Contacto</span>
-      </div>
-    </div>
-    {/* Hero */}
-    <div style={{
-      padding: '40px 28px 36px',
-      background: 'linear-gradient(135deg, #1F2B38, #2B3A4A)',
-      color: '#fff',
-      position: 'relative',
-    }}>
-      <div style={{ fontSize: 11, color: '#B89A7A', fontWeight: 600, marginBottom: 8, letterSpacing: '0.04em' }}>IGLESIA HISPANA · MIAMI</div>
-      <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.01em', lineHeight: 1.2, marginBottom: 8, maxWidth: '70%' }}>
-        Una casa de fe, restauración y comunidad
-      </div>
-      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)', marginBottom: 16, maxWidth: '60%', lineHeight: 1.4 }}>
-        Somos una iglesia hispana donde toda familia encuentra un hogar espiritual.
-      </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button style={{ padding: '7px 14px', borderRadius: 8, background: '#8A6A4A', color: '#fff', border: 'none', fontWeight: 600, fontSize: 11 }}>Donar ahora</button>
-        <button style={{ padding: '7px 14px', borderRadius: 8, background: 'transparent', color: '#fff', border: '1px solid rgba(255,255,255,0.2)', fontWeight: 600, fontSize: 11 }}>Visítanos</button>
-      </div>
-    </div>
-    {/* Horarios */}
-    <div style={{ padding: '28px' }}>
-      <div style={{ fontSize: 10, color: 'var(--coffee)', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Nuestros servicios</div>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Horarios de reunión</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-        {[
-          ['Domingo · 10:00 AM', 'Servicio dominical'],
-          ['Domingo · 6:00 PM', 'Servicio bilingüe'],
-          ['Miércoles · 7:30 PM', 'Estudio bíblico'],
-          ['Viernes · 7:00 PM', 'Jóvenes'],
-        ].map((h, i) => (
-          <div key={i} style={{ padding: '10px 12px', border: '1px solid var(--border-soft)', borderRadius: 8 }}>
-            <div style={{ fontSize: 10, color: 'var(--muted)' }}>{h[0]}</div>
-            <div style={{ fontWeight: 600, fontSize: 11 }}>{h[1]}</div>
+// ============================================================
+// HorariosEditor — service_times CRUD
+// ============================================================
+function HorariosEditor({ serviceTimes, churchId, canEdit, onToast, onRefresh }) {
+  const [editing, setEditing] = useState(null); // null or service_time row
+  const [adding, setAdding] = useState(false);
+
+  const handleSave = async (payload) => {
+    try {
+      if (editing && editing.id) {
+        await updateServiceTime(editing.id, payload);
+        onToast({ title: 'Horario actualizado' });
+      } else {
+        await createServiceTime(churchId, payload);
+        onToast({ title: 'Horario agregado' });
+      }
+      await onRefresh();
+      setEditing(null);
+      setAdding(false);
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error', sub: e.message });
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('¿Eliminar este horario?')) return;
+    try {
+      await deleteServiceTime(id);
+      onToast({ title: 'Horario eliminado' });
+      await onRefresh();
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error', sub: e.message });
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <H title="Horarios" desc="Servicios y reuniones que aparecen en el portal." action={canEdit && !adding ? (
+        <button className="btn btn-sm btn-primary" onClick={() => setAdding(true)}><Icon name="plus" size={12} /> Agregar</button>
+      ) : null} />
+      {serviceTimes.filter((s) => s.is_active).map((s) => (
+        editing?.id === s.id ? (
+          <HorarioForm key={s.id} initial={s} onCancel={() => setEditing(null)} onSave={handleSave} />
+        ) : (
+          <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, border: '1px solid var(--border-soft)', borderRadius: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{DAYS[s.day_of_week]} · {s.start_time?.slice(0, 5)}</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>{s.meeting_type} · {s.location || '—'}</div>
+            </div>
+            {canEdit && (
+              <>
+                <button className="btn btn-sm btn-ghost" onClick={() => setEditing(s)} title="Editar"><Icon name="edit" size={14} /></button>
+                <button className="btn btn-sm btn-ghost" onClick={() => handleDelete(s.id)} title="Eliminar"><Icon name="x" size={14} /></button>
+              </>
+            )}
           </div>
-        ))}
-      </div>
+        )
+      ))}
+      {adding && <HorarioForm onCancel={() => setAdding(false)} onSave={handleSave} />}
+      {serviceTimes.filter((s) => s.is_active).length === 0 && !adding && (
+        <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Sin horarios. Click "Agregar".</div>
+      )}
     </div>
-    {/* Campaigns */}
-    <div style={{ padding: '0 28px 28px' }}>
-      <div style={{ fontSize: 10, color: 'var(--coffee)', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Campañas activas</div>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Apoya con tu donación</div>
+  );
+}
+
+function HorarioForm({ initial, onCancel, onSave }) {
+  const [form, setForm] = useState({
+    day_of_week: initial?.day_of_week ?? 0,
+    start_time: initial?.start_time?.slice(0, 5) || '10:00',
+    duration_min: initial?.duration_min || 90,
+    meeting_type: initial?.meeting_type || '',
+    location: initial?.location || '',
+    address: initial?.address || '',
+  });
+
+  return (
+    <div style={{ padding: 14, border: '2px solid var(--coffee)', borderRadius: 10, background: 'var(--bg)' }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        {[['Fondo de construcción', 32400, 50000], ['Misiones 2026', 11200, 12000]].map((c, i) => (
-          <div key={i} style={{ padding: 12, background: 'var(--bg)', borderRadius: 8 }}>
-            <div style={{ fontWeight: 600, fontSize: 11, marginBottom: 6 }}>{c[0]}</div>
-            <div style={{ height: 5, background: '#fff', borderRadius: 999, overflow: 'hidden', marginBottom: 6 }}>
-              <div style={{ width: `${c[1]/c[2]*100}%`, height: '100%', background: 'var(--coffee)' }}></div>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--muted)' }}>
-              <span style={{ fontWeight: 700, color: 'var(--text)' }}>${c[1].toLocaleString()}</span>
-              <span>de ${c[2].toLocaleString()}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-    {/* Footer */}
-    <div style={{ padding: '20px 28px', background: 'var(--bg)', borderTop: '1px solid var(--border-soft)', display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--muted)' }}>
-      <span>2310 SW 27th Ave, Miami FL 33145</span>
-      <span>(305) 555-0100 · hola@casaderestauracion.org</span>
-    </div>
-  </div>
-);
-
-const MobilePreview = () => (
-  <div style={{ fontSize: 10, background: '#fff', height: '100%', overflowY: 'auto' }}>
-    <div style={{ padding: '20px 16px 6px', display: 'flex', alignItems: 'center', gap: 8 }}>
-      <div style={{ width: 22, height: 22, borderRadius: 6, background: 'var(--coffee)', color: '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 9 }}>CR</div>
-      <div style={{ fontWeight: 700, fontSize: 11 }}>Casa de Restauración</div>
-    </div>
-    <div style={{ padding: '20px 16px 24px', background: 'linear-gradient(135deg, #1F2B38, #2B3A4A)', color: '#fff' }}>
-      <div style={{ fontSize: 9, color: '#B89A7A', fontWeight: 600, marginBottom: 6 }}>IGLESIA HISPANA</div>
-      <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.2, marginBottom: 8 }}>Una casa de fe y restauración</div>
-      <div style={{ fontSize: 9, opacity: 0.7, marginBottom: 12 }}>Toda familia encuentra un hogar.</div>
-      <button style={{ width: '100%', padding: '8px', borderRadius: 6, background: 'var(--coffee)', color: '#fff', border: 'none', fontSize: 10, fontWeight: 600 }}>Donar ahora</button>
-    </div>
-    <div style={{ padding: '16px' }}>
-      <div style={{ fontSize: 8, color: 'var(--coffee)', fontWeight: 700, marginBottom: 4 }}>HORARIOS</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {[['Domingo · 10:00 AM', 'Dominical'], ['Miércoles · 7:30 PM', 'Estudio bíblico']].map((h, i) => (
-          <div key={i} style={{ padding: 8, border: '1px solid var(--border-soft)', borderRadius: 6 }}>
-            <div style={{ fontSize: 8, color: 'var(--muted)' }}>{h[0]}</div>
-            <div style={{ fontWeight: 600, fontSize: 9 }}>{h[1]}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-    <div style={{ padding: '0 16px 16px' }}>
-      <div style={{ fontSize: 8, color: 'var(--coffee)', fontWeight: 700, marginBottom: 4 }}>CAMPAÑAS</div>
-      <div style={{ padding: 10, background: 'var(--bg)', borderRadius: 6 }}>
-        <div style={{ fontWeight: 600, fontSize: 9, marginBottom: 4 }}>Fondo de construcción</div>
-        <div style={{ height: 4, background: '#fff', borderRadius: 999, overflow: 'hidden', marginBottom: 4 }}>
-          <div style={{ width: '65%', height: '100%', background: 'var(--coffee)' }}></div>
+        <div className="field">
+          <label>Día</label>
+          <select value={form.day_of_week} onChange={(e) => setForm({ ...form, day_of_week: Number(e.target.value) })}>
+            {DAYS.map((d, i) => <option key={i} value={i}>{d}</option>)}
+          </select>
         </div>
-        <div style={{ fontSize: 8, color: 'var(--muted)' }}>$32,400 de $50,000</div>
+        <div className="field">
+          <label>Hora</label>
+          <input type="time" value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value })} />
+        </div>
+        <div className="field" style={{ gridColumn: '1 / -1' }}>
+          <label>Tipo de reunión</label>
+          <input value={form.meeting_type} onChange={(e) => setForm({ ...form, meeting_type: e.target.value })} placeholder="Servicio dominical" />
+        </div>
+        <div className="field" style={{ gridColumn: '1 / -1' }}>
+          <label>Lugar</label>
+          <input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} placeholder="Sede principal" />
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 10 }}>
+        <button className="btn btn-sm btn-ghost" onClick={onCancel}>Cancelar</button>
+        <button className="btn btn-sm btn-primary" onClick={() => onSave(form)} disabled={!form.meeting_type}>Guardar</button>
       </div>
     </div>
-  </div>
-);
+  );
+}
+
+// ============================================================
+// DonacionesEditor (portal donations section)
+// ============================================================
+function DonacionesEditor({ draft, funds, onChange, canEdit }) {
+  const frequencies = ['one_time', 'monthly', 'annual'];
+  const FREQUENCY_LABEL = { one_time: 'Única', monthly: 'Mensual', annual: 'Anual' };
+  const visible = draft.visible_frequencies || ['one_time', 'monthly'];
+
+  const toggleFreq = (f) => {
+    if (!canEdit) return;
+    const next = visible.includes(f) ? visible.filter((x) => x !== f) : [...visible, f];
+    onChange({ visible_frequencies: next });
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <H title="Donaciones" desc="Cómo aparece el botón de donar en el portal." />
+      <div className="field">
+        <label>Texto del botón donar</label>
+        <input value={draft.button_text || 'Donar ahora'} onChange={(e) => onChange({ button_text: e.target.value })} disabled={!canEdit} />
+      </div>
+      <div className="field">
+        <label>Fondo predeterminado</label>
+        <select value={draft.default_fund_id || ''} onChange={(e) => onChange({ default_fund_id: e.target.value })} disabled={!canEdit}>
+          <option value="">Seleccionar fondo</option>
+          {funds.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+      </div>
+      <div className="field">
+        <label>Frecuencias visibles</label>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {frequencies.map((f) => (
+            <button key={f} type="button" className={`chip ${visible.includes(f) ? 'active' : ''}`} onClick={() => toggleFreq(f)} disabled={!canEdit}>
+              {FREQUENCY_LABEL[f]}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="field">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input type="checkbox" checked={!!draft.show_recurring} onChange={(e) => onChange({ show_recurring: e.target.checked })} disabled={!canEdit} />
+          Mostrar opción de donación recurrente
+        </label>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// CampanasEditor
+// ============================================================
+function CampanasEditor({ campaigns, onToast, onRefresh, canEdit }) {
+  const handleToggle = async (c) => {
+    try {
+      await setCampaignVisibility(c.id, !c.is_visible_on_portal);
+      onToast({ title: c.is_visible_on_portal ? 'Campaña oculta del portal' : 'Campaña visible en portal' });
+      await onRefresh();
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error', sub: e.message });
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <H title="Campañas visibles" desc="Selecciona qué campañas activas aparecen en el portal público." />
+      {campaigns.length === 0 ? (
+        <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Sin campañas activas. Créalas en el módulo Donaciones.</div>
+      ) : (
+        campaigns.map((c) => (
+          <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, border: '1px solid var(--border-soft)', borderRadius: 10 }}>
+            <Icon name="target" size={16} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)' }}>Meta · ${(c.goal_cents / 100).toLocaleString()}</div>
+            </div>
+            <button onClick={() => canEdit && handleToggle(c)} disabled={!canEdit} className={`toggle ${c.is_visible_on_portal ? 'on' : ''}`} aria-label="Toggle visibility" />
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// ContactoEditor
+// ============================================================
+function ContactoEditor({ draft, onChange, canEdit }) {
+  const social = draft.social || {};
+  const setSocial = (k, v) => onChange({ social: { ...social, [k]: v } });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <H title="Contacto" desc="Información de contacto en el portal público." />
+      <div className="field">
+        <label>Dirección</label>
+        <input value={draft.address || ''} onChange={(e) => onChange({ address: e.target.value })} disabled={!canEdit} />
+      </div>
+      <div className="field">
+        <label>Teléfono</label>
+        <input value={draft.phone || ''} onChange={(e) => onChange({ phone: e.target.value })} disabled={!canEdit} />
+      </div>
+      <div className="field">
+        <label>Email</label>
+        <input type="email" value={draft.email || ''} onChange={(e) => onChange({ email: e.target.value })} disabled={!canEdit} />
+      </div>
+      <div className="field">
+        <label>Enlace de mapa</label>
+        <input value={draft.map_url || ''} onChange={(e) => onChange({ map_url: e.target.value })} disabled={!canEdit} placeholder="https://maps.google.com/?q=..." />
+      </div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: 8 }}>Redes sociales</div>
+      <div className="field">
+        <label>Facebook</label>
+        <input value={social.facebook || ''} onChange={(e) => setSocial('facebook', e.target.value)} disabled={!canEdit} placeholder="@usuario" />
+      </div>
+      <div className="field">
+        <label>Instagram</label>
+        <input value={social.instagram || ''} onChange={(e) => setSocial('instagram', e.target.value)} disabled={!canEdit} placeholder="@usuario" />
+      </div>
+      <div className="field">
+        <label>YouTube</label>
+        <input value={social.youtube || ''} onChange={(e) => setSocial('youtube', e.target.value)} disabled={!canEdit} placeholder="@canal" />
+      </div>
+      <div className="field">
+        <label>WhatsApp</label>
+        <input value={social.whatsapp || ''} onChange={(e) => setSocial('whatsapp', e.target.value)} disabled={!canEdit} placeholder="+13055550100" />
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PortalPreview — preview con desktop/mobile
+// ============================================================
+function PortalPreview({ draft, published, device, onDeviceChange, church, serviceTimes, campaigns, funds }) {
+  const identity = draft.identity || {};
+  const hero = draft.hero || {};
+  const donations = draft.donations || {};
+  const contact = draft.contact || {};
+  const color = identity.primary_color || '#8A6A4A';
+
+  return (
+    <div className="card" style={{ position: 'sticky', top: 88 }}>
+      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-soft)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>Vista previa</div>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button className={`btn btn-sm ${device === 'desktop' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => onDeviceChange('desktop')}>
+            <Icon name="monitor" size={12} />
+          </button>
+          <button className={`btn btn-sm ${device === 'mobile' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => onDeviceChange('mobile')}>
+            <Icon name="smartphone" size={12} />
+          </button>
+        </div>
+      </div>
+
+      <div style={{ padding: 16, background: 'var(--bg)' }}>
+        <div style={{
+          maxWidth: device === 'mobile' ? 320 : '100%',
+          margin: '0 auto',
+          background: '#fff',
+          borderRadius: 12,
+          overflow: 'hidden',
+          boxShadow: 'var(--shadow-md)',
+          fontSize: 12,
+          minHeight: 480,
+        }}>
+          {/* Hero */}
+          <div style={{ background: `linear-gradient(135deg, ${color}, ${color}cc)`, color: '#fff', padding: device === 'mobile' ? 20 : 32, textAlign: 'center' }}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(255,255,255,0.2)', display: 'inline-grid', placeItems: 'center', fontWeight: 700, marginBottom: 12 }}>
+              {(identity.public_name || church?.public_name || 'CR').split(' ').slice(0, 2).map((w) => w[0]).join('').toUpperCase()}
+            </div>
+            <div style={{ fontWeight: 700, fontSize: device === 'mobile' ? 16 : 22, marginBottom: 6 }}>{identity.public_name || church?.public_name || 'Iglesia'}</div>
+            {hero.title && <div style={{ fontSize: device === 'mobile' ? 13 : 15, opacity: 0.95, marginBottom: 8 }}>{hero.title}</div>}
+            {hero.message && <p style={{ margin: '12px 0', opacity: 0.85, lineHeight: 1.5 }}>{hero.message}</p>}
+            <button style={{ marginTop: 12, padding: '10px 22px', background: '#fff', color, border: 'none', borderRadius: 999, fontWeight: 700, cursor: 'pointer' }}>
+              {donations.button_text || hero.cta_text || 'Donar ahora'}
+            </button>
+          </div>
+
+          {/* Horarios */}
+          {serviceTimes.length > 0 && (
+            <div style={{ padding: device === 'mobile' ? 16 : 24 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>Horarios</div>
+              {serviceTimes.filter((s) => s.is_active).map((s) => (
+                <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 11, color: 'var(--text)' }}>
+                  <span style={{ fontWeight: 600 }}>{DAYS[s.day_of_week]} {s.start_time?.slice(0, 5)}</span>
+                  <span style={{ color: 'var(--muted)' }}>{s.meeting_type}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Campañas */}
+          {campaigns.length > 0 && (
+            <div style={{ padding: device === 'mobile' ? 16 : 24, borderTop: '1px solid var(--border-soft)' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>Campañas</div>
+              {campaigns.slice(0, 3).map((c) => (
+                <div key={c.id} style={{ padding: 8, marginBottom: 6, border: '1px solid var(--border-soft)', borderRadius: 8, fontSize: 11, color: 'var(--text)' }}>
+                  <div style={{ fontWeight: 600 }}>{c.name}</div>
+                  <div style={{ color: 'var(--muted)', marginTop: 2 }}>Meta · ${(c.goal_cents / 100).toLocaleString()}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Contacto */}
+          {(contact.address || contact.phone || contact.email) && (
+            <div style={{ padding: device === 'mobile' ? 16 : 24, borderTop: '1px solid var(--border-soft)' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>Contacto</div>
+              {contact.address && <div style={{ padding: '4px 0', fontSize: 11, color: 'var(--text)' }}><Icon name="map" size={11} /> {contact.address}</div>}
+              {contact.phone && <div style={{ padding: '4px 0', fontSize: 11, color: 'var(--text)' }}><Icon name="phone" size={11} /> {contact.phone}</div>}
+              {contact.email && <div style={{ padding: '4px 0', fontSize: 11, color: 'var(--text)' }}><Icon name="mail" size={11} /> {contact.email}</div>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+function H({ title, desc, action }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 8 }}>
+      <div style={{ flex: 1 }}>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>{title}</h3>
+        {desc && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{desc}</div>}
+      </div>
+      {action}
+    </div>
+  );
+}
