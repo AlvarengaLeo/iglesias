@@ -1,5 +1,51 @@
 import { supabase } from '../lib/supabase.js';
 
+// Public anonymous portal data by slug. Uses RLS anon policies.
+// Returns combined { church, portal, campaigns, serviceTimes } or null.
+export async function getPublicPortalBySlug(slug) {
+  if (!slug) return null;
+
+  const { data: church, error: cErr } = await supabase
+    .from('churches')
+    .select('id, public_name, slug, primary_color, logo_url, ein')
+    .eq('slug', slug)
+    .maybeSingle();
+  if (cErr) throw cErr;
+  if (!church) return null;
+
+  const { data: portal } = await supabase
+    .from('portal_settings')
+    .select('published_data, published_at')
+    .eq('church_id', church.id)
+    .eq('publish_status', 'published')
+    .maybeSingle();
+
+  // If never published, return null (page should show "not published" state)
+  if (!portal) return { church, portal: null };
+
+  const [{ data: campaigns }, { data: serviceTimes }] = await Promise.all([
+    supabase.from('campaigns')
+      .select('id, name, description, goal_cents, currency, end_date, image_url')
+      .eq('church_id', church.id)
+      .eq('is_visible_on_portal', true)
+      .eq('status', 'active')
+      .is('deleted_at', null),
+    supabase.from('service_times')
+      .select('id, day_of_week, start_time, duration_min, meeting_type, location, address, sort_order')
+      .eq('church_id', church.id)
+      .eq('is_active', true)
+      .order('day_of_week', { ascending: true })
+      .order('start_time', { ascending: true }),
+  ]);
+
+  return {
+    church,
+    portal,
+    campaigns: campaigns || [],
+    serviceTimes: serviceTimes || [],
+  };
+}
+
 export async function getPortalSettings(churchId) {
   const { data, error } = await supabase
     .from('portal_settings')

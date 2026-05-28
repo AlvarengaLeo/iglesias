@@ -29,8 +29,9 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        main:  resolve(__dirname, 'index.html'),
-        print: resolve(__dirname, 'Sistema de Iglesia-print.html'),
+        main:   resolve(__dirname, 'index.html'),
+        portal: resolve(__dirname, 'portal.html'),
+        print:  resolve(__dirname, 'Sistema de Iglesia-print.html'),
       },
     },
     outDir: 'dist',

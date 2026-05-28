@@ -151,6 +151,17 @@ export function PortalScreen({ onToast }) {
           <p className="page-sub">Administra la información pública de tu iglesia · {publishStatusBadge}</p>
         </div>
         <div className="page-actions">
+          {settings?.publish_status === 'published' && church?.slug && (
+            <a
+              className="btn btn-ghost"
+              href={`/portal.html?slug=${encodeURIComponent(church.slug)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Abrir el portal público en una nueva pestaña"
+            >
+              <Icon name="arrowUpRight" size={14} /> Ver portal público
+            </a>
+          )}
           {(isDirty || hasUnpublished) && (
             <button className="btn btn-ghost" onClick={handleDiscard} disabled={!canEdit || saving}>
               <Icon name="x" size={14} /> Descartar
