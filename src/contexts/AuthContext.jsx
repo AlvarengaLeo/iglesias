@@ -14,12 +14,37 @@ export function AuthProvider({ children }) {
       setSession(data.session);
       setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      // SIGNED_OUT que llega durante un TOKEN_REFRESHED fallido es transitorio:
+      // si todavía hay sesión válida en storage, no lo propagamos para evitar
+      // que el AuthGuard pateé al usuario al login a mitad de navegación.
+      if (event === 'SIGNED_OUT' && !s) {
+        // Doble check antes de propagar — pregunta una vez más a Supabase.
+        supabase.auth.getSession().then(({ data }) => {
+          if (mounted) setSession(data.session ?? null);
+        });
+        return;
+      }
       setSession(s);
     });
+
+    // Cuando el usuario vuelve a la pestaña después de dejarla abierta,
+    // forzamos refresh para evitar que la próxima query falle por token expirado.
+    const onVisible = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const { data } = await supabase.auth.refreshSession();
+        if (mounted && data?.session) setSession(data.session);
+      } catch {
+        // Si falla el refresh, dejamos que onAuthStateChange lo maneje
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       mounted = false;
       sub.subscription.unsubscribe();
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
 
