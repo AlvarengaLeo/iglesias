@@ -50,25 +50,19 @@ export async function getReportKpis(churchId, { dateStart, dateEnd, fundId, camp
   };
 }
 
-// Aggregations for charts
+// Aggregations for charts. Llama RPC real-time (reemplaza mv_church_monthly_donations).
 export async function getMonthlyDonations(churchId, monthsBack = 12) {
-  const { data, error } = await supabase
-    .from('mv_church_monthly_donations')
-    .select('year, month, total_cents, donation_count, unique_donor_count')
-    .eq('church_id', churchId)
-    .order('year', { ascending: true })
-    .order('month', { ascending: true });
+  const { data, error } = await supabase.rpc('rpc_monthly_donations_series', {
+    p_church_id: churchId,
+    p_months_back: monthsBack,
+  });
   if (error) throw error;
-
-  // Group by year-month (mv has fund/method breakdown)
-  const grouped = {};
-  for (const r of data || []) {
-    const key = `${r.year}-${String(r.month).padStart(2, '0')}`;
-    if (!grouped[key]) grouped[key] = { year: r.year, month: r.month, total_cents: 0, donation_count: 0 };
-    grouped[key].total_cents += Number(r.total_cents);
-    grouped[key].donation_count += Number(r.donation_count);
-  }
-  return Object.values(grouped).slice(-monthsBack);
+  return (data || []).map((r) => ({
+    year: r.year,
+    month: r.month,
+    total_cents: Number(r.total_cents),
+    donation_count: Number(r.donation_count),
+  }));
 }
 
 export async function getDonationsByFund(churchId, { dateStart, dateEnd } = {}) {
@@ -104,7 +98,7 @@ export async function getDonationsByMethod(churchId, { dateStart, dateEnd } = {}
   if (error) throw error;
 
   const labels = { card: 'Tarjeta', ach: 'ACH', cash: 'Efectivo', check: 'Cheque', stripe: 'Stripe', other: 'Otro' };
-  const colors = { card: '#1F2B38', ach: '#8A6A4A', cash: '#B89A7A', check: '#5C7CB0', stripe: '#864F8C', other: '#666' };
+  const colors = { card: '#16307F', ach: '#2348C4', cash: '#6F8AFF', check: '#9CC0EA', stripe: '#3B2F8F', other: '#9AA3B2' };
   const groups = {};
   for (const r of data || []) {
     groups[r.payment_method] = (groups[r.payment_method] || 0) + Number(r.amount_cents);

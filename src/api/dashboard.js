@@ -124,46 +124,18 @@ export async function getPendingActions(churchId) {
   return actions;
 }
 
-// Monthly trend (last 8 months)
+// Monthly trend (last N months). Llama a la RPC real-time para evitar mv stale.
 export async function getMonthlyTrend(churchId, monthsBack = 8) {
-  const { data, error } = await supabase
-    .from('mv_church_monthly_donations')
-    .select('year, month, total_cents')
-    .eq('church_id', churchId)
-    .order('year', { ascending: true })
-    .order('month', { ascending: true });
-  if (error) {
-    // Fallback to live query
-    const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - monthsBack);
-    const { data: live } = await supabase
-      .from('donations')
-      .select('donation_date, amount_cents')
-      .eq('church_id', churchId)
-      .eq('payment_status', 'paid')
-      .is('deleted_at', null)
-      .gte('donation_date', startDate.toISOString());
-    const grouped = {};
-    for (const d of live || []) {
-      const dt = new Date(d.donation_date);
-      const key = `${dt.getFullYear()}-${dt.getMonth() + 1}`;
-      grouped[key] = (grouped[key] || 0) + Number(d.amount_cents);
-    }
-    return Object.entries(grouped).map(([k, v]) => {
-      const [y, m] = k.split('-').map(Number);
-      return { year: y, month: m, total_cents: v };
-    });
-  }
-
-  const grouped = {};
-  for (const r of data || []) {
-    const key = `${r.year}-${r.month}`;
-    grouped[key] = (grouped[key] || 0) + Number(r.total_cents);
-  }
-  return Object.entries(grouped).map(([k, v]) => {
-    const [y, m] = k.split('-').map(Number);
-    return { year: y, month: m, total_cents: v };
-  }).slice(-monthsBack);
+  const { data, error } = await supabase.rpc('rpc_monthly_donations_series', {
+    p_church_id: churchId,
+    p_months_back: monthsBack,
+  });
+  if (error) throw error;
+  return (data || []).map((r) => ({
+    year: r.year,
+    month: r.month,
+    total_cents: Number(r.total_cents),
+  }));
 }
 
 // Aggregations for "this month"
@@ -194,7 +166,91 @@ export async function getThisMonthBreakdown(churchId) {
     byFund: Object.entries(byFund).map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value),
     byFreq: Object.entries(byFreq).map(([label, value], i) => ({
       label, value,
-      color: ['#1F2B38', '#8A6A4A', '#B89A7A', '#5C7CB0'][i % 4],
+      color: ['#16307F', '#2348C4', '#9CC0EA', '#6F8AFF'][i % 4],
     })),
   };
+}
+
+// Build the last N month buckets: [{ key:'YYYY-MM', label:'Jun' }] ending in the current month.
+function lastMonths(n) {
+  const out = [];
+  const now = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    let label = d.toLocaleDateString('es', { month: 'short' }).replace('.', '');
+    label = label.charAt(0).toUpperCase() + label.slice(1);
+    out.push({ key, label });
+  }
+  return out;
+}
+
+// BI: donor base health — new vs. returning donors per month (donor retention).
+// A donor is "new" in the month of their first-ever paid donation, "returning"
+// in any later month they give. Anonymous gifts (no person) are excluded.
+export async function getDonorAcquisition(churchId, monthsBack = 6) {
+  const { data, error } = await supabase
+    .from('donations')
+    .select('donor_person_id, donation_date')
+    .eq('church_id', churchId)
+    .eq('payment_status', 'paid')
+    .is('deleted_at', null)
+    .not('donor_person_id', 'is', null);
+  if (error) throw error;
+
+  const ym = (s) => String(s).slice(0, 7);
+  const firstMonth = {};
+  for (const r of data || []) {
+    const m = ym(r.donation_date);
+    if (!firstMonth[r.donor_person_id] || m < firstMonth[r.donor_person_id]) firstMonth[r.donor_person_id] = m;
+  }
+
+  const keys = lastMonths(monthsBack);
+  const series = keys.map(({ key, label }) => {
+    const donors = new Set((data || []).filter((r) => ym(r.donation_date) === key).map((r) => r.donor_person_id));
+    let nuevos = 0; let existentes = 0;
+    for (const id of donors) (firstMonth[id] === key ? (nuevos += 1) : (existentes += 1));
+    return { label, values: { nuevos, existentes } };
+  });
+
+  const last = series[series.length - 1];
+  const total = last ? last.values.nuevos + last.values.existentes : 0;
+  const retentionPct = total > 0 ? Math.round((last.values.existentes / total) * 100) : null;
+  const hasData = series.some((m) => m.values.nuevos + m.values.existentes > 0);
+  return { data: series, retentionPct, hasData };
+}
+
+// BI: income composition — recurring vs. one-time giving per month (in dollars).
+// Recurring = donations marked monthly/annual; predictable income for the church.
+export async function getIncomeComposition(churchId, monthsBack = 6) {
+  const start = new Date();
+  start.setMonth(start.getMonth() - (monthsBack - 1));
+  start.setDate(1); start.setHours(0, 0, 0, 0);
+
+  const { data, error } = await supabase
+    .from('donations')
+    .select('donation_date, amount_cents, frequency')
+    .eq('church_id', churchId)
+    .eq('payment_status', 'paid')
+    .is('deleted_at', null)
+    .gte('donation_date', start.toISOString());
+  if (error) throw error;
+
+  const keys = lastMonths(monthsBack);
+  const idx = Object.fromEntries(keys.map((k, i) => [k.key, i]));
+  const series = keys.map((k) => ({ label: k.label, values: { recurrente: 0, puntual: 0 } }));
+  for (const r of data || []) {
+    const i = idx[String(r.donation_date).slice(0, 7)];
+    if (i == null) continue;
+    const cents = Number(r.amount_cents);
+    if (r.frequency === 'monthly' || r.frequency === 'annual') series[i].values.recurrente += cents;
+    else series[i].values.puntual += cents;
+  }
+
+  const last = series[series.length - 1];
+  const tot = last ? last.values.recurrente + last.values.puntual : 0;
+  const recurringSharePct = tot > 0 ? Math.round((last.values.recurrente / tot) * 100) : null;
+  const dollars = series.map((m) => ({ label: m.label, values: { recurrente: m.values.recurrente / 100, puntual: m.values.puntual / 100 } }));
+  const hasData = dollars.some((m) => m.values.recurrente + m.values.puntual > 0);
+  return { data: dollars, recurringSharePct, hasData };
 }

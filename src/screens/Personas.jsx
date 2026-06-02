@@ -168,7 +168,7 @@ export function PersonasScreen({ onToast }) {
       </div>
 
       {/* Filter / Search bar */}
-      <div className="card" style={{ marginBottom: 16, padding: 14 }}>
+      <div className="card dash-in" style={{ marginBottom: 16, padding: 14 }}>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div className="input-wrap" style={{ flex: '1 1 280px', minWidth: 240 }}>
             <Icon name="search" />
@@ -194,7 +194,7 @@ export function PersonasScreen({ onToast }) {
       </div>
 
       {/* Table */}
-      <div className="card">
+      <div className="card dash-in" style={{ animationDelay: '.06s' }}>
         <div className="table-wrap">
           <table className="table">
             <thead>
@@ -226,9 +226,10 @@ export function PersonasScreen({ onToast }) {
                   </td>
                 </tr>
               )}
-              {people?.map((p) => (
+              {people?.map((p, i) => (
                 <PersonRow
                   key={p.id}
+                  index={i}
                   person={p}
                   isSelected={selected?.id === p.id}
                   onSelect={() => setSelected(p)}
@@ -283,7 +284,7 @@ export function PersonasScreen({ onToast }) {
 // =====================================================================
 // PersonRow — fila individual de la tabla
 // =====================================================================
-function PersonRow({ person, isSelected, onSelect }) {
+function PersonRow({ person, isSelected, onSelect, index = 0 }) {
   const name = personDisplayName(person);
   const initials = personInitials(person);
   const tone = STATUS_TONE[person.status] || 'muted';
@@ -296,7 +297,7 @@ function PersonRow({ person, isSelected, onSelect }) {
       : '—';
 
   return (
-    <tr className={isSelected ? 'selected' : ''} onClick={onSelect} style={{ cursor: 'pointer' }}>
+    <tr className={`tbl-row ${isSelected ? 'selected' : ''}`} onClick={onSelect} style={{ cursor: 'pointer', animationDelay: `${Math.min(index, 18) * 0.025}s` }}>
       <td onClick={(e) => e.stopPropagation()}><input type="checkbox" /></td>
       <td>
         <div className="person-cell">

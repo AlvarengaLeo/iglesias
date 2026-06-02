@@ -7,6 +7,7 @@ import { useState, useEffect } from 'react';
 import { Icon } from '../components/Icon.jsx';
 import { Badge } from '../components/Badge.jsx';
 import { formatMoney as fmt } from '../components/charts/index.jsx';
+import { Kpi } from '../components/Kpi.jsx';
 import { useChurch } from '../hooks/useChurch.js';
 import { useAuth } from '../hooks/useAuth.js';
 import { useRole } from '../hooks/useRole.js';
@@ -19,8 +20,13 @@ import { listCampaigns, listCampaignProgress, createCampaign, setCampaignVisibil
 import { listAllRecurring } from '../api/recurring.js';
 import { listReceipts, resendReceipt, RECEIPT_STATUS_LABEL, RECEIPT_STATUS_TONE, RESEND_REASON_LABEL } from '../api/receipts.js';
 import { listPeople, personDisplayName, personInitials } from '../api/people.js';
+import {
+  listIntents, countPendingIntents, linkIntentToDonation, markContacted, cancelIntent,
+  intentDonorDisplayName, intentDonorInitials, intentReferenceCode,
+  INTENT_STATUS_LABEL, INTENT_STATUS_TONE, INTENT_FREQUENCY_LABEL, INTENT_TYPE_LABEL,
+} from '../api/donationIntents.js';
 import { exportReceiptPdf } from '../lib/exportPdf.js';
-import { dollarsToCents } from '../lib/money.js';
+import { dollarsToCents, centsToDollars } from '../lib/money.js';
 import { formatDate, formatRelativeTime, shortenId } from '../lib/formatters.js';
 
 const formatMoney = (cents) => fmt(Number(cents) / 100);
@@ -42,11 +48,16 @@ export function DonacionesScreen({ onToast }) {
   const [selected, setSelected] = useState(null);
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [showCampaignModal, setShowCampaignModal] = useState(false);
+  const [intents, setIntents] = useState([]);
+  const [pendingIntentCount, setPendingIntentCount] = useState(0);
+  // Si está seteado, RegisterDonationModal abre pre-llenado y al guardar
+  // se vincula la donation creada al intent vía rpc_link_intent_to_donation.
+  const [convertingIntent, setConvertingIntent] = useState(null);
 
   const refetchAll = async () => {
     if (!churchId) return;
     try {
-      const [d, f, c, r, cp, rec, k] = await Promise.all([
+      const [d, f, c, r, cp, rec, k, ints, pc] = await Promise.all([
         listDonations(churchId, filters),
         listFunds(churchId),
         listCampaigns(churchId),
@@ -54,6 +65,8 @@ export function DonacionesScreen({ onToast }) {
         listCampaignProgress(churchId),
         listReceipts(churchId),
         getDonationsKpis(churchId),
+        listIntents(churchId, { limit: 200 }),
+        countPendingIntents(churchId),
       ]);
       setDonations(d);
       setFunds(f);
@@ -62,6 +75,8 @@ export function DonacionesScreen({ onToast }) {
       setCampaignProgress(cp);
       setReceipts(rec);
       setKpis(k);
+      setIntents(ints);
+      setPendingIntentCount(pc);
     } catch (e) {
       console.error(e);
       onToast({ tone: 'error', icon: 'alert', title: 'Error al cargar donaciones', sub: e.message });
@@ -79,14 +94,56 @@ export function DonacionesScreen({ onToast }) {
         frequency: payload.frequency, donationDate: payload.donationDate,
         notes: payload.notes, autoGenerateReceipt: payload.autoGenerateReceipt,
       });
+
+      // Si veníamos convirtiendo un intent, enlazar.
+      if (convertingIntent && result?.donation_id) {
+        try {
+          await linkIntentToDonation(convertingIntent.id, result.donation_id);
+        } catch (linkErr) {
+          // La donation ya se creó, pero el link falló — avisar pero no romper.
+          onToast({
+            tone: 'warning', icon: 'alert',
+            title: 'Donación creada, pero no se pudo vincular la intención',
+            sub: linkErr.message,
+          });
+        }
+      }
+
       onToast({
-        title: 'Donación registrada correctamente',
+        title: convertingIntent ? 'Intención convertida en donación' : 'Donación registrada correctamente',
         sub: result.receipt_number ? `Recibo ${result.receipt_number} generado` : 'Sin recibo automático',
       });
       setShowRegisterModal(false);
+      setConvertingIntent(null);
       await refetchAll();
     } catch (e) {
       onToast({ tone: 'error', icon: 'alert', title: 'Error al registrar', sub: e.message });
+    }
+  };
+
+  const handleConvertIntent = (intent) => {
+    setConvertingIntent(intent);
+    setShowRegisterModal(true);
+  };
+
+  const handleMarkContacted = async (intent) => {
+    try {
+      await markContacted(intent.id);
+      onToast({ title: 'Intención marcada como contactada' });
+      await refetchAll();
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error', sub: e.message });
+    }
+  };
+
+  const handleCancelIntent = async (intent) => {
+    if (!window.confirm(`¿Cancelar la intención de ${intentDonorDisplayName(intent)}?`)) return;
+    try {
+      await cancelIntent(intent.id);
+      onToast({ title: 'Intención cancelada' });
+      await refetchAll();
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Error', sub: e.message });
     }
   };
 
@@ -120,7 +177,7 @@ export function DonacionesScreen({ onToast }) {
 
       <DonationKpis kpis={kpis} />
 
-      <div className="card" style={{ marginBottom: 16, padding: 14 }}>
+      <div className="card dash-in" style={{ marginBottom: 16, padding: 14 }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <FilterPill label="Fondo" value={filters.fund_id} onChange={(v) => setFilters({ ...filters, fund_id: v })} options={[{ value: '', label: 'Todos' }, ...funds.map((f) => ({ value: f.id, label: f.name }))]} />
           <FilterPill label="Campaña" value={filters.campaign_id} onChange={(v) => setFilters({ ...filters, campaign_id: v })} options={[{ value: '', label: 'Todas' }, ...campaigns.map((c) => ({ value: c.id, label: c.name }))]} />
@@ -135,15 +192,20 @@ export function DonacionesScreen({ onToast }) {
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card dash-in" style={{ marginBottom: 16, animationDelay: '.06s' }}>
         <div style={{ display: 'flex', borderBottom: '1px solid var(--border-soft)', padding: '0 12px' }}>
-          {['Todas', 'Recurrentes', 'Campañas', 'Recibos'].map((t) => (
+          {['Todas', 'Recurrentes', 'Campañas', 'Recibos', 'Intenciones'].map((t) => (
             <button key={t} className={`tab-u ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
               {t}
               {t === 'Todas' && donations !== null && <span className="count">{donations.length}</span>}
               {t === 'Recurrentes' && <span className="count">{recurring.filter((r) => r.status === 'active').length}</span>}
               {t === 'Campañas' && <span className="count">{campaigns.filter((c) => c.status === 'active').length}</span>}
               {t === 'Recibos' && <span className="count">{receipts.length}</span>}
+              {t === 'Intenciones' && (
+                <span className="count" style={pendingIntentCount > 0 ? { background: 'var(--warning-bg)', color: 'var(--warning)' } : {}}>
+                  {pendingIntentCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -152,6 +214,15 @@ export function DonacionesScreen({ onToast }) {
         {tab === 'Recurrentes' && <RecurringTable rows={recurring} />}
         {tab === 'Campañas' && <CampaignsList campaigns={campaigns} progress={campaignProgress} onToast={onToast} onRefresh={refetchAll} canEdit={can('campaigns.write')} />}
         {tab === 'Recibos' && <ReceiptsTable receipts={receipts} />}
+        {tab === 'Intenciones' && (
+          <IntentsList
+            intents={intents}
+            canConvert={can('donations.create')}
+            onConvert={handleConvertIntent}
+            onMarkContacted={handleMarkContacted}
+            onCancel={handleCancelIntent}
+          />
+        )}
       </div>
 
       {selected && (
@@ -170,8 +241,19 @@ export function DonacionesScreen({ onToast }) {
           churchId={churchId}
           funds={funds}
           campaigns={campaigns.filter((c) => c.status === 'active')}
-          onClose={() => setShowRegisterModal(false)}
+          onClose={() => { setShowRegisterModal(false); setConvertingIntent(null); }}
           onSubmit={handleRegisterDonation}
+          initial={convertingIntent ? {
+            donorEmail: convertingIntent.donor_email,
+            amount: String(centsToDollars(convertingIntent.amount_cents)),
+            fundId: convertingIntent.fund_id,
+            campaignId: convertingIntent.campaign_id || '',
+            frequency: convertingIntent.frequency,
+            notes: [
+              convertingIntent.note && `Mensaje del donante: ${convertingIntent.note}`,
+              `Convertida desde intención ${intentReferenceCode(convertingIntent)}`,
+            ].filter(Boolean).join('\n'),
+          } : null}
         />
       )}
 
@@ -187,21 +269,13 @@ export function DonacionesScreen({ onToast }) {
 }
 
 function DonationKpis({ kpis }) {
+  const loading = !kpis;
   return (
-    <div className="grid grid-4" style={{ marginBottom: 16 }}>
-      <Kpi icon="dollar" label="Total este mes" value={kpis ? formatMoney(kpis.monthTotal) : '—'} />
-      <Kpi icon="refresh" label="Recurrentes activos" value={kpis ? String(kpis.recurringActiveCount) : '—'} />
-      <Kpi icon="clock" label="Pendientes" value={kpis ? `${kpis.pendingCount} (${formatMoney(kpis.pendingTotal)})` : '—'} />
-      <Kpi icon="receipt" label="Recibos del mes" value={kpis ? String(kpis.receiptsThisMonth) : '—'} />
-    </div>
-  );
-}
-
-function Kpi({ icon, label, value }) {
-  return (
-    <div className="kpi">
-      <div className="kpi-label"><Icon name={icon} /> {label}</div>
-      <div className="kpi-value">{value}</div>
+    <div className="grid grid-4 dash-reveal" style={{ marginBottom: 16 }}>
+      <Kpi icon="dollar" label="Total este mes" loading={loading} value={kpis ? Number(kpis.monthTotal) : null} format={formatMoney} />
+      <Kpi icon="refresh" label="Recurrentes activos" loading={loading} value={kpis ? Number(kpis.recurringActiveCount) : null} />
+      <Kpi icon="clock" label="Pendientes" loading={loading} value={kpis ? `${kpis.pendingCount} (${formatMoney(kpis.pendingTotal)})` : null} />
+      <Kpi icon="receipt" label="Recibos del mes" loading={loading} value={kpis ? Number(kpis.receiptsThisMonth) : null} />
     </div>
   );
 }
@@ -248,8 +322,8 @@ function DonationsTable({ donations, onSelect, selectedId }) {
           </tr>
         </thead>
         <tbody>
-          {donations.map((d) => (
-            <tr key={d.id} className={selectedId === d.id ? 'selected' : ''} onClick={() => onSelect(d)} style={{ cursor: 'pointer' }}>
+          {donations.map((d, i) => (
+            <tr key={d.id} className={`tbl-row ${selectedId === d.id ? 'selected' : ''}`} onClick={() => onSelect(d)} style={{ cursor: 'pointer', animationDelay: `${Math.min(i, 18) * 0.025}s` }}>
               <td>
                 <div style={{ fontWeight: 600, fontSize: 13 }}>{d.donor_name_snapshot}</div>
                 {d.donor_email_snapshot && <div style={{ fontSize: 11, color: 'var(--muted)' }}>{d.donor_email_snapshot}</div>}
@@ -298,12 +372,12 @@ function RecurringTable({ rows }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => {
+          {rows.map((r, i) => {
             const donorName = r.donor?.organization_name || `${r.donor?.first_name || ''} ${r.donor?.last_name || ''}`.trim() || '—';
             const statusTone = { active: 'success', paused: 'warning', canceled: 'muted', past_due: 'error' }[r.status] || 'muted';
             const statusLabel = { active: 'Activo', paused: 'Pausado', canceled: 'Cancelado', past_due: 'Atrasado' }[r.status] || r.status;
             return (
-              <tr key={r.id}>
+              <tr key={r.id} className="tbl-row" style={{ animationDelay: `${Math.min(i, 18) * 0.025}s` }}>
                 <td style={{ fontWeight: 600 }}>{donorName}</td>
                 <td className="tnum" style={{ textAlign: 'right', fontWeight: 700 }}>{formatMoney(r.amount_cents)}</td>
                 <td>{FREQUENCY_LABEL[r.frequency]}</td>
@@ -389,8 +463,8 @@ function ReceiptsTable({ receipts }) {
           </tr>
         </thead>
         <tbody>
-          {receipts.map((r) => (
-            <tr key={r.id}>
+          {receipts.map((r, i) => (
+            <tr key={r.id} className="tbl-row" style={{ animationDelay: `${Math.min(i, 18) * 0.025}s` }}>
               <td className="mono">{r.receipt_number}</td>
               <td style={{ fontWeight: 600 }}>{r.person_name_snapshot}</td>
               <td>{r.receipt_type === 'annual_statement' ? `Anual ${r.tax_year}` : 'Por donación'}</td>
@@ -581,18 +655,18 @@ function ResendReceiptModal({ receiptId, currentEmail, onClose, onSuccess, onErr
   );
 }
 
-function RegisterDonationModal({ churchId, funds, campaigns, onClose, onSubmit }) {
-  const [donorSearch, setDonorSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+function RegisterDonationModal({ churchId, funds, campaigns, onClose, onSubmit, initial = null }) {
+  const [donorSearch, setDonorSearch] = useState(initial?.donorEmail || '');
+  const [debouncedSearch, setDebouncedSearch] = useState(initial?.donorEmail || '');
   const [donorOptions, setDonorOptions] = useState([]);
   const [donor, setDonor] = useState(null);
-  const [amount, setAmount] = useState('');
-  const [fundId, setFundId] = useState(funds.find((f) => f.is_default)?.id || funds[0]?.id || '');
-  const [campaignId, setCampaignId] = useState('');
+  const [amount, setAmount] = useState(initial?.amount || '');
+  const [fundId, setFundId] = useState(initial?.fundId || funds.find((f) => f.is_default)?.id || funds[0]?.id || '');
+  const [campaignId, setCampaignId] = useState(initial?.campaignId || '');
   const [paymentMethod, setPaymentMethod] = useState('cash');
-  const [frequency, setFrequency] = useState('one_time');
+  const [frequency, setFrequency] = useState(initial?.frequency || 'one_time');
   const [donationDate, setDonationDate] = useState(new Date().toISOString().split('T')[0]);
-  const [notes, setNotes] = useState('');
+  const [notes, setNotes] = useState(initial?.notes || '');
   const [autoReceipt, setAutoReceipt] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -821,5 +895,117 @@ function InfoRow({ icon, label, value }) {
         <div style={{ fontSize: 13, fontWeight: 500, wordBreak: 'break-word' }}>{value}</div>
       </div>
     </div>
+  );
+}
+
+// ============================================================
+// IntentsList — Tab "Intenciones"
+// ============================================================
+function IntentsList({ intents, canConvert, onConvert, onMarkContacted, onCancel }) {
+  if (!intents) {
+    return <div style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>Cargando…</div>;
+  }
+  if (intents.length === 0) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
+        <Icon name="handHeart" size={28} />
+        <div style={{ marginTop: 8, fontSize: 13 }}>Sin intenciones de donación todavía.</div>
+        <div style={{ marginTop: 4, fontSize: 11 }}>Cuando alguien complete el formulario del portal público, aparecerá aquí.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="table-wrap">
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Donante</th>
+            <th style={{ width: 110, textAlign: 'right' }}>Monto</th>
+            <th>Destino</th>
+            <th>Frecuencia</th>
+            <th>Email</th>
+            <th>Estado</th>
+            <th style={{ width: 110 }}>Fecha</th>
+            <th style={{ width: 130 }}>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {intents.map((intent, i) => (
+            <IntentRow
+              key={intent.id}
+              index={i}
+              intent={intent}
+              canConvert={canConvert}
+              onConvert={onConvert}
+              onMarkContacted={onMarkContacted}
+              onCancel={onCancel}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function IntentRow({ intent, canConvert, onConvert, onMarkContacted, onCancel, index = 0 }) {
+  const isPending = intent.status === 'pending_payment' || intent.status === 'payment_provider_pending';
+  const isCompleted = intent.status === 'completed';
+  const typeBadge = INTENT_TYPE_LABEL[intent.donor_type] || intent.donor_type;
+  const typeIcon = intent.donor_type === 'business' ? 'users' : intent.donor_type === 'anonymous' ? 'eyeOff' : 'user';
+  const destination = intent.campaign?.name || intent.fund?.name || '—';
+
+  return (
+    <tr className="tbl-row" style={{ opacity: isCompleted || intent.status === 'canceled' ? 0.55 : 1, animationDelay: `${Math.min(index, 18) * 0.025}s` }}>
+      <td>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div className="avatar sm">{intentDonorInitials(intent)}</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>{intentDonorDisplayName(intent)}</div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Icon name={typeIcon} size={10} /> {typeBadge}
+            </div>
+          </div>
+        </div>
+      </td>
+      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatMoney(intent.amount_cents)}</td>
+      <td>
+        <div style={{ fontSize: 13 }}>{destination}</div>
+        {intent.campaign?.name && intent.fund?.name && (
+          <div style={{ fontSize: 11, color: 'var(--muted)' }}>{intent.fund.name}</div>
+        )}
+      </td>
+      <td>{INTENT_FREQUENCY_LABEL[intent.frequency] || intent.frequency}</td>
+      <td style={{ fontSize: 12 }}><a href={`mailto:${intent.donor_email}`} style={{ color: 'var(--text)' }}>{intent.donor_email}</a></td>
+      <td><Badge tone={INTENT_STATUS_TONE[intent.status] || 'muted'} dot>{INTENT_STATUS_LABEL[intent.status] || intent.status}</Badge></td>
+      <td style={{ fontSize: 12, color: 'var(--muted)' }}>{formatRelativeTime(intent.created_at)}</td>
+      <td>
+        {isPending ? (
+          <div className="row-actions" style={{ justifyContent: 'flex-end' }}>
+            {canConvert && (
+              <button
+                className="btn btn-sm btn-primary"
+                title="Convertir en donación confirmada"
+                onClick={() => onConvert(intent)}
+              >
+                <Icon name="check" size={12} /> Registrar
+              </button>
+            )}
+            {!intent.contacted_at && (
+              <button className="btn btn-sm btn-ghost" title="Marcar como contactado" onClick={() => onMarkContacted(intent)}>
+                <Icon name="phone" size={12} />
+              </button>
+            )}
+            <button className="btn btn-sm btn-ghost" title="Cancelar intención" onClick={() => onCancel(intent)}>
+              <Icon name="x" size={12} />
+            </button>
+          </div>
+        ) : isCompleted ? (
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>{intentReferenceCode(intent)}</span>
+        ) : (
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>—</span>
+        )}
+      </td>
+    </tr>
   );
 }

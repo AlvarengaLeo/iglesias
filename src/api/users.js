@@ -14,7 +14,7 @@ export async function listChurchUsers(churchId) {
 
 // Change a church_user's role. Only admin can do this (enforced by RLS).
 export async function updateUserRole(churchUserId, role) {
-  const valid = ['admin', 'pastor', 'treasurer', 'secretary', 'leader', 'viewer'];
+  const valid = ['admin', 'pastor', 'treasurer', 'secretary', 'leader', 'viewer', 'servidor'];
   if (!valid.includes(role)) throw new Error('Rol inválido: ' + role);
 
   const { data, error } = await supabase
@@ -39,11 +39,43 @@ export async function setUserActive(churchUserId, isActive) {
   return data;
 }
 
-// STUB: invitar usuario por email. Edge Function `invite-user` se implementa en Fase 6/9.
-// Por ahora solo registra el intent en consola para QA.
-export async function inviteUserStub({ email, role }) {
-  console.warn('[stub] inviteUser pendiente — Fase futura:', { email, role });
-  return { stub: true };
+// Invita un nuevo miembro a la iglesia. Llama a la Edge Function `invite-user`
+// que:
+//   1. Valida el JWT del caller
+//   2. Verifica que el caller sea admin de la iglesia
+//   3. Inserta church_invitations
+//   4. Dispara el email de invitación via SMTP nativo de Supabase Auth
+//
+// Errores comunes:
+//   - invalid_email / invalid_role / invalid_church_id
+//   - forbidden (caller no es admin)
+//   - admin_role_blocked (no se permite invitar admins desde la UI)
+//   - invitation_already_pending
+//   - user_already_exists
+//   - auth_invite_failed (dominio rechazado, SMTP no configurado, etc.)
+export async function inviteUser({ email, role, churchId, fullName, personId }) {
+  const { data, error } = await supabase.functions.invoke('invite-user', {
+    body: {
+      email,
+      role,
+      church_id: churchId,
+      full_name: fullName || null,
+      person_id: personId || null,
+    },
+  });
+  if (error) {
+    // El cliente envuelve non-2xx en FunctionsHttpError; intentar leer el body real.
+    let detail = error.message;
+    if (error.context?.response) {
+      try {
+        const txt = await error.context.response.text();
+        const parsed = JSON.parse(txt);
+        detail = parsed.message || parsed.error || txt;
+      } catch { /* keep error.message */ }
+    }
+    throw new Error(detail);
+  }
+  return data;
 }
 
 // Human-friendly role label in Spanish.
@@ -55,6 +87,7 @@ export const roleLabel = (role) =>
     secretary: 'Secretaria',
     leader: 'Líder',
     viewer: 'Lector',
+    servidor: 'Servidor',
   }[role] || role || '—');
 
 // Badge tone per role (for consistent coloring).
@@ -66,4 +99,5 @@ export const roleTone = (role) =>
     secretary: 'info',
     leader: 'muted',
     viewer: 'muted',
+    servidor: 'success',
   }[role] || 'muted');

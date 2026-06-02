@@ -6,6 +6,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../components/Icon.jsx';
 import { Badge } from '../components/Badge.jsx';
 import { LineChart, BarChart, DonutChart, HBarChart, formatMoney as fmt } from '../components/charts/index.jsx';
+import { Kpi, ChartSkeleton } from '../components/Kpi.jsx';
 import { useChurch } from '../hooks/useChurch.js';
 import { useAuth } from '../hooks/useAuth.js';
 import { useRole } from '../hooks/useRole.js';
@@ -56,7 +57,9 @@ export function ReportesScreen({ onToast }) {
   const [campaigns, setCampaigns] = useState([]);
   const [exporting, setExporting] = useState(false);
   const [showAnnualModal, setShowAnnualModal] = useState(false);
+  const [revealKey, setRevealKey] = useState(0);
 
+  const loading = kpis === null;
   const dateStartISO = filters.dateStart ? new Date(filters.dateStart).toISOString() : null;
   const dateEndISO = filters.dateEnd ? new Date(filters.dateEnd + 'T23:59:59').toISOString() : null;
 
@@ -79,6 +82,7 @@ export function ReportesScreen({ onToast }) {
       setTopCampaigns(top.map((c) => ({ ...c, value: c.value / 100 })));
       setFunds(f);
       setCampaigns(c);
+      setRevealKey((k) => k + 1); // re-trigger chart reveal animations on new data
     } catch (e) {
       onToast({ tone: 'error', icon: 'alert', title: 'Error al cargar reportes', sub: e.message });
     }
@@ -220,11 +224,11 @@ export function ReportesScreen({ onToast }) {
       </div>
 
       {/* KPIs */}
-      <div className="grid grid-4" style={{ marginBottom: 16 }}>
-        <Kpi icon="dollar" label="Total recibido" value={kpis ? formatMoney(kpis.totalCents) : '—'} />
-        <Kpi icon="check" label="Total neto" value={kpis ? formatMoney(kpis.netCents) : '—'} sub={kpis && kpis.feesCents > 0 ? `Comisiones: ${formatMoney(kpis.feesCents)}` : null} />
-        <Kpi icon="users" label="Donantes únicos" value={kpis ? String(kpis.uniqueDonors) : '—'} />
-        <Kpi icon="star" label="Top campaña" value={kpis?.topCampaign?.name || '—'} sub={kpis?.topCampaign ? formatMoney(kpis.topCampaign.total_cents) : null} />
+      <div className="grid grid-4 dash-reveal" style={{ marginBottom: 16 }}>
+        <Kpi icon="dollar" label="Total recibido" loading={loading} value={kpis ? Number(kpis.totalCents) : null} format={formatMoney} />
+        <Kpi icon="check" label="Total neto" loading={loading} value={kpis ? Number(kpis.netCents) : null} format={formatMoney} sub={kpis && kpis.feesCents > 0 ? `Comisiones: ${formatMoney(kpis.feesCents)}` : null} />
+        <Kpi icon="users" label="Donantes únicos" loading={loading} value={kpis ? Number(kpis.uniqueDonors) : null} />
+        <Kpi icon="star" label="Top campaña" loading={loading} value={kpis?.topCampaign?.name || '—'} sub={kpis?.topCampaign ? formatMoney(kpis.topCampaign.total_cents) : null} />
       </div>
 
       {/* Tabs */}
@@ -236,22 +240,22 @@ export function ReportesScreen({ onToast }) {
         </div>
 
         {tab === 'Resumen' && (
-          <div style={{ padding: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div className="dash-reveal" style={{ padding: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 700 }}>Donaciones por mes</h3>
-              {monthlyData.length > 0 ? <LineChart data={monthlyData} height={220} /> : <Empty />}
+              {loading ? <ChartSkeleton height={220} /> : monthlyData.length > 0 ? <LineChart key={revealKey} data={monthlyData} height={220} /> : <Empty />}
             </div>
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 700 }}>Donaciones por fondo</h3>
-              {fundData.length > 0 ? <BarChart data={fundData} height={220} /> : <Empty />}
+              {loading ? <ChartSkeleton height={220} /> : fundData.length > 0 ? <BarChart key={revealKey} data={fundData} height={220} /> : <Empty />}
             </div>
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 700 }}>Métodos de pago</h3>
-              {methodData.length > 0 ? <DonutChart data={methodData} size={180} label="Total" /> : <Empty />}
+              {loading ? <ChartSkeleton height={180} /> : methodData.length > 0 ? <DonutChart key={revealKey} data={methodData} size={180} label="Total" /> : <Empty />}
             </div>
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 700 }}>Top campañas</h3>
-              {topCampaigns.length > 0 ? <HBarChart data={topCampaigns} /> : <Empty />}
+              {loading ? <ChartSkeleton height={140} /> : topCampaigns.length > 0 ? <HBarChart key={revealKey} data={topCampaigns} /> : <Empty />}
             </div>
           </div>
         )}
@@ -337,16 +341,6 @@ export function ReportesScreen({ onToast }) {
       {showAnnualModal && (
         <AnnualStatementModal churchId={churchId} userId={user.id} onClose={() => setShowAnnualModal(false)} onToast={onToast} />
       )}
-    </div>
-  );
-}
-
-function Kpi({ icon, label, value, sub }) {
-  return (
-    <div className="kpi">
-      <div className="kpi-label"><Icon name={icon} /> {label}</div>
-      <div className="kpi-value">{value}</div>
-      {sub && <div className="kpi-meta"><span className="muted">{sub}</span></div>}
     </div>
   );
 }

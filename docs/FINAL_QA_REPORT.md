@@ -298,3 +298,142 @@ El CRM es funcional para:
 **Generado**: 2026-05-28 ~11:00 UTC
 **Por**: Senior Engineer (Auth + Backend + Data Engineer + Architect)
 **Verificado contra**: Supabase project `dcmdcmpqowwntdtkrlfm`
+
+---
+
+# Fase 13 — Hardening mínimo antes de producción (2026-05-27)
+
+Tras la auditoría completa (`docs/AUDIT_REPORT_2026-05-27.md`) se ejecutó la Fase 13 para cerrar los huecos críticos antes de producción.
+
+## Resultado
+
+| Item | Estado |
+|---|---|
+| **Policy pública de campaigns** — anon cross-tenant leak | ✅ resuelto via `rpc_public_portal_by_slug` + endurecimiento de policies anon |
+| **`mv_church_monthly_donations` stale** | ✅ resuelto via `rpc_monthly_donations_series` (real-time) |
+| **Storage bucket `church-assets`** | ✅ creado, 4 policies SQL aplicadas |
+| **Upload de logo de iglesia** | ✅ funcional desde Configuración → Identidad visual |
+| **Upload de imagen hero del portal** | ✅ funcional desde Portal → Inicio (hero) |
+| **Edge Function `invite-user`** | ✅ desplegada, smoke tests pasaron 5/5 |
+| **InviteUserModal en Configuración** | ✅ reemplaza `inviteUserStub` |
+| **Sidebar logo dinámico** | ✅ renderiza `<img>` si `church.logo_url`, fallback iniciales |
+| **Email de recibos (Resend)** | ⏸️ omitido explícitamente por decisión del usuario; deliveries siguen en `status='queued'` |
+| `npm run build` | ✅ exit 0 en 3.69s |
+
+## Artefactos nuevos
+
+### Migraciones (3)
+- `supabase/migrations/20260530120001_public_portal_rpc.sql` — RPC `rpc_public_portal_by_slug` + endurece policies anon de `churches`, `campaigns`, `service_times`.
+- `supabase/migrations/20260530120002_dashboard_rpcs.sql` — RPC `rpc_monthly_donations_series`.
+- `supabase/migrations/20260530120003_storage.sql` — bucket `church-assets` (2 MB max, png/jpg/webp/svg) + 4 policies.
+
+### Edge Function (1)
+- `supabase/functions/invite-user/index.ts` — invitación vía Supabase Auth `inviteUserByEmail()` (SMTP nativo, sin Resend). Helpers compartidos en `_shared/auth.ts` y `_shared/cors.ts`.
+
+### Frontend (2 nuevos, 8 modificados)
+- Nuevos: `src/lib/storage.js`, `src/components/AssetUploader.jsx`.
+- Modificados: `src/api/{portal,dashboard,reports,churches,users}.js`, `src/screens/{Configuracion,Portal}.jsx`, `src/components/Sidebar.jsx`.
+
+## Pruebas E2E (esta fase)
+
+- ✅ `npx supabase db push --include-all` aplicó las 3 nuevas migraciones sin error.
+- ✅ Anon hardening: `anon.from('churches')` devuelve 0 rows (antes: 2). `anon.rpc('rpc_public_portal_by_slug', {p_slug:'casa-de-restauracion'})` devuelve JSONB completo; con slug inexistente o iglesia no publicada devuelve NULL.
+- ✅ `rpc_monthly_donations_series` (autenticado): 8 meses de serie con totales correctos, incluye los $77.77 del E2E previo.
+- ✅ Bucket `church-assets` listado vía `storage.listBuckets()` con `public=true`, `file_size_limit=2097152`.
+- ✅ Edge Function `invite-user` desplegada en `dcmdcmpqowwntdtkrlfm`. 5 smoke tests:
+  - TEST 1 (email válido @example.com) → 500 `auth_invite_failed` (Supabase rechaza example.com como dominio inválido — comportamiento esperado). Invitación huérfana fue auto-revocada por la función.
+  - TEST 2 (role inválido `super-user`) → 400 `invalid_role`.
+  - TEST 3 (church_id ajeno) → 403 `forbidden`.
+  - TEST 4 (intentar invitar admin) → 403 `admin_role_blocked`.
+  - TEST 5 (email sin arroba) → 400 `invalid_email`.
+- ✅ `npm run build` exit 0 (509 modules, 3.69s).
+
+## Limitaciones conocidas (declaradas)
+
+1. **Email de recibos** sigue como `queued` sin envío real. Cuando se quiera activar: implementar Edge Function `send-receipt-email` con un proveedor (Resend, SendGrid, AWS SES, o SMTP propio). Reescribir `src/api/receipts.js → resendReceipt()` para invocar la función.
+2. **PDF de recibo** sigue cliente-side. Para producción se debería generar server-side y subir a un bucket privado (`church-receipts-private`) con signed URLs.
+3. **`Sistema de Iglesia-print.html`** legacy sigue generando 8 warnings de build (no rompe nada).
+4. **Estado anual de contribuciones**: la función `generateAnnualStatement` existe pero sigue sin botón en Reportes.
+5. **Stripe, multi-membership switcher, tests automatizados**: explícitamente fuera de esta fase.
+6. **Logo en sección Identidad del Portal editor** sigue siendo placeholder (el logo real se administra en Configuración). El render público usa `churches.logo_url`.
+
+## Secrets
+
+Ninguno nuevo. La Edge Function usa `SUPABASE_SERVICE_ROLE_KEY` y `SUPABASE_ANON_KEY` que Supabase inyecta automáticamente en el runtime — no requiere `supabase secrets set`.
+
+**Generado**: 2026-05-27 (post-auditoría)
+**Verificado contra**: Supabase project `dcmdcmpqowwntdtkrlfm`
+
+---
+
+# Fase 14 — Flujo público de donación (sin Stripe, Stripe-ready)
+
+Cierra el motor funcional de donaciones públicas, modelado como el patrón Stripe PaymentIntent: una intención pública anónima → conversión manual del admin → donación confirmada con recibo.
+
+## Lo entregado
+
+| Item | Estado |
+|---|---|
+| Tabla `donation_intents` con RLS estricta | ✅ |
+| RPC `rpc_create_public_donation_intent` (anon) con honeypot + rate limit | ✅ |
+| RPC `rpc_link_intent_to_donation` (auth) | ✅ |
+| RPC `rpc_update_intent_status` (mark_contacted / cancel) | ✅ |
+| `rpc_public_portal_by_slug` extendida con `funds[]` + `payment_available` | ✅ |
+| `paymentProvider.js` (abstracción Stripe-ready) | ✅ |
+| `DonationModal` + `DonationForm` + `DonationThanks` (mobile-first, single-page con sticky summary) | ✅ |
+| PublicPortal wireado: nav CTA, hero CTA, footer CTA y botón por campaña abren el modal | ✅ |
+| Tab "Intenciones" en Donaciones admin con badge de pendientes | ✅ |
+| Conversión intent → donation: RegisterDonationModal pre-llenado + link automático | ✅ |
+| Lenguaje religioso/cálido (sin compra/factura/checkout) | ✅ |
+| Doc `DONATION_FLOW.md` completa (12 secciones) | ✅ |
+| ARCHITECTURE.md §12 y SUPABASE_SETUP.md §16 actualizados | ✅ |
+| Stripe NO conectado (explícito), pero 4 pasos documentados para wirear | ✅ |
+| Tests RPC pública 11/11 OK (happy paths, honeypot, validaciones, rate limit, RLS) | ✅ |
+| `npm run build` exit 0 | ✅ |
+
+## Artefactos
+
+### Migraciones nuevas (3) — total 17 en remoto
+- `20260601120001_donation_intents.sql`
+- `20260601120002_rpc_donation_intents.sql`
+- `20260601120003_rpc_public_portal_extend.sql`
+
+### Frontend nuevo (6 archivos)
+- `src/api/publicDonations.js`
+- `src/api/donationIntents.js`
+- `src/lib/paymentProvider.js`
+- `src/public/DonationModal.jsx`
+- `src/public/DonationForm.jsx`
+- `src/public/DonationThanks.jsx`
+
+### Frontend modificado (5 archivos)
+- `src/api/portal.js` — pass through funds + payment_available
+- `src/public/PublicPortal.jsx` — 3 botones → openDonation(); botón por campaña con campaign_id; `<DonationModal>` montado
+- `src/public/public-portal.css` — +320 líneas de estilos del modal/thanks/responsive
+- `src/screens/Donaciones.jsx` — tab Intenciones + IntentsList + flow de conversión
+- ya descritos en commits
+
+### Docs nuevas/actualizadas
+- `docs/DONATION_FLOW.md` (NUEVO — filosofía + 12 secciones)
+- `docs/ARCHITECTURE.md` (§12)
+- `docs/SUPABASE_SETUP.md` (§16)
+- este archivo
+
+## Limitaciones conocidas
+
+1. **Stripe no conectado** — `paymentProvider.js.isPaymentAvailable()` retorna siempre `false`. Los 4 pasos para wirear están en `DONATION_FLOW.md` §8.
+2. **Email automático al donor** confirmando intent: NO implementado. Sin Resend/SendGrid.
+3. **PDF de recibo** sigue cliente-side.
+4. **Sweeper de intents expirados**: la columna `expires_at` existe (default +90 días) pero no hay job que los marque `expired` automáticamente. Pendiente pg_cron.
+5. **Conversión recurrente**: si admin convierte un intent con `frequency='monthly'`, se crea UNA donation (no se materializa un `recurring_donation_profile`). Para flow recurrente con Stripe, el webhook crearía una donation por cada `invoice.paid`.
+
+## Stripe-readiness check
+
+- ✅ 5 columnas `provider_*` reservadas en `donation_intents` (sin ALTER TABLE futuro).
+- ✅ `payment_available` flag en RPC pública (hoy hardcoded false, una línea para activar).
+- ✅ Status `payment_provider_pending` en el enum desde el día 1.
+- ✅ `paymentProvider.js` con interfaz `isPaymentAvailable` + `createCheckout` documentada.
+- ✅ `DONATION_FLOW.md` §8 detalla los 4 pasos (env vars, Edge Functions, RPC change, frontend).
+
+**Generado**: 2026-05-30
+**Verificado contra**: Supabase project `dcmdcmpqowwntdtkrlfm` (17 migraciones)

@@ -23,15 +23,22 @@ export default defineConfig({
     include: ['react', 'react-dom', 'react-dom/client', '@supabase/supabase-js'],
   },
   server: {
-    port: 5173,
+    // 5173 puede estar ocupado por otro proyecto en este equipo; usamos un
+    // puerto dedicado para EB Connect (CRM, portal, backoffice, landing).
+    port: 5180,
     strictPort: true,
+    // La carpeta de favicons tiene un PNG que el SO bloquea (EBUSY) y tumbaba
+    // el file-watcher de Vite → la ignoramos para mantener el dev estable.
+    watch: { ignored: ['**/favicon_io*/**'] },
   },
   build: {
     rollupOptions: {
       input: {
-        main:   resolve(__dirname, 'index.html'),
-        portal: resolve(__dirname, 'portal.html'),
-        print:  resolve(__dirname, 'Sistema de Iglesia-print.html'),
+        main:       resolve(__dirname, 'index.html'),
+        portal:     resolve(__dirname, 'portal.html'),
+        print:      resolve(__dirname, 'Sistema de Iglesia-print.html'),
+        backoffice: resolve(__dirname, 'backoffice.html'),
+        landing:    resolve(__dirname, 'landing.html'),
       },
     },
     outDir: 'dist',

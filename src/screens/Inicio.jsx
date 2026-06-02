@@ -5,13 +5,13 @@
 import { useState, useEffect } from 'react';
 import { Icon } from '../components/Icon.jsx';
 import { Badge } from '../components/Badge.jsx';
-import { LineChart, BarChart, DonutChart, formatMoney as fmt } from '../components/charts/index.jsx';
+import { LineChart, BarChart, DonutChart, StackedBars, formatMoney as fmt } from '../components/charts/index.jsx';
+import { Kpi, ChartSkeleton } from '../components/Kpi.jsx';
 import { useChurch } from '../hooks/useChurch.js';
 import {
-  getDashboardKpis, getActiveCampaignsProgress, getRecentActivity,
-  getPendingActions, getMonthlyTrend, getThisMonthBreakdown,
+  getDashboardKpis, getActiveCampaignsProgress, getDonorAcquisition,
+  getIncomeComposition, getMonthlyTrend, getThisMonthBreakdown,
 } from '../api/dashboard.js';
-import { formatRelativeTime } from '../lib/formatters.js';
 
 const MONTH_LABEL = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 const formatMoney = (cents) => fmt(Number(cents) / 100);
@@ -20,8 +20,8 @@ export function InicioScreen({ onToast, onAction }) {
   const { church, churchId } = useChurch();
   const [kpis, setKpis] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
-  const [activity, setActivity] = useState([]);
-  const [pending, setPending] = useState([]);
+  const [donorAcq, setDonorAcq] = useState(null);
+  const [income, setIncome] = useState(null);
   const [monthly, setMonthly] = useState([]);
   const [breakdown, setBreakdown] = useState({ byFund: [], byFreq: [] });
 
@@ -30,15 +30,15 @@ export function InicioScreen({ onToast, onAction }) {
     Promise.all([
       getDashboardKpis(churchId),
       getActiveCampaignsProgress(churchId),
-      getRecentActivity(churchId),
-      getPendingActions(churchId),
+      getDonorAcquisition(churchId, 6),
+      getIncomeComposition(churchId, 6),
       getMonthlyTrend(churchId, 8),
       getThisMonthBreakdown(churchId),
-    ]).then(([k, c, a, p, m, b]) => {
+    ]).then(([k, c, d, inc, m, b]) => {
       setKpis(k);
       setCampaigns(c);
-      setActivity(a);
-      setPending(p);
+      setDonorAcq(d);
+      setIncome(inc);
       setMonthly(m.map((r) => ({ label: MONTH_LABEL[r.month - 1], value: Number(r.total_cents) / 100 })));
       setBreakdown(b);
     }).catch((e) => {
@@ -46,6 +46,7 @@ export function InicioScreen({ onToast, onAction }) {
     });
   }, [churchId]);
 
+  const loading = kpis === null;
   const monthChange = kpis && Number(kpis.donations_prev_month_cents) > 0
     ? Math.round(((Number(kpis.donations_month_cents) - Number(kpis.donations_prev_month_cents)) / Number(kpis.donations_prev_month_cents)) * 100)
     : null;
@@ -70,14 +71,14 @@ export function InicioScreen({ onToast, onAction }) {
         </div>
       </div>
 
-      <div className="grid grid-4" style={{ marginBottom: 16 }}>
-        <Kpi icon="dollar" label="Donaciones del mes" value={kpis ? formatMoney(kpis.donations_month_cents) : '—'} trend={monthChange} trendLabel="vs mes anterior" />
-        <Kpi icon="refresh" label="Donantes recurrentes" value={kpis ? String(kpis.active_recurring_count) : '—'} sub={kpis ? `${kpis.new_recurring_month} nuevos este mes` : null} />
-        <Kpi icon="target" label="Campañas activas" value={kpis ? String(kpis.active_campaigns_count) : '—'} sub={kpis && kpis.campaigns_near_goal > 0 ? <Badge tone="warning" dot>{kpis.campaigns_near_goal} cerca de meta</Badge> : null} />
-        <Kpi icon="receipt" label="Recibos enviados" value={kpis ? String(kpis.receipts_sent_month) : '—'} sub={kpis ? `${kpis.receipts_resent_month} reenviados` : null} />
+      <div className="grid grid-4 dash-reveal" style={{ marginBottom: 16 }}>
+        <Kpi icon="dollar" label="Donaciones del mes" loading={loading} value={kpis ? Number(kpis.donations_month_cents) : null} format={formatMoney} trend={monthChange} trendLabel="vs mes anterior" />
+        <Kpi icon="refresh" label="Donantes recurrentes" loading={loading} value={kpis ? Number(kpis.active_recurring_count) : null} sub={kpis ? `${kpis.new_recurring_month} nuevos este mes` : null} />
+        <Kpi icon="target" label="Campañas activas" loading={loading} value={kpis ? Number(kpis.active_campaigns_count) : null} sub={kpis && kpis.campaigns_near_goal > 0 ? <Badge tone="warning" dot>{kpis.campaigns_near_goal} cerca de meta</Badge> : null} />
+        <Kpi icon="receipt" label="Recibos enviados" loading={loading} value={kpis ? Number(kpis.receipts_sent_month) : null} sub={kpis ? `${kpis.receipts_resent_month} reenviados` : null} />
       </div>
 
-      <div className="grid grid-12" style={{ marginBottom: 16 }}>
+      <div className="grid grid-12 dash-reveal" style={{ marginBottom: 16 }}>
         <div className="card col-span-8">
           <div className="card-header">
             <div>
@@ -86,39 +87,42 @@ export function InicioScreen({ onToast, onAction }) {
             </div>
           </div>
           <div style={{ padding: 16 }}>
-            {monthly.length > 0 ? <LineChart data={monthly} height={240} accent="#8A6A4A" /> : <Empty />}
+            {loading ? <ChartSkeleton height={240} /> : monthly.length > 0 ? <LineChart data={monthly} height={240} accent="#2348C4" /> : <Empty />}
           </div>
         </div>
         <div className="card col-span-4">
           <div className="card-header"><h3>Distribución por frecuencia</h3></div>
           <div style={{ padding: 20 }}>
-            {breakdown.byFreq.length > 0 ? <DonutChart data={breakdown.byFreq.map((d) => ({ ...d, value: d.value / 100 }))} size={140} label="Este mes" /> : <Empty />}
+            {loading ? <ChartSkeleton height={180} /> : breakdown.byFreq.length > 0 ? <DonutChart data={breakdown.byFreq.map((d) => ({ ...d, value: d.value / 100 }))} size={140} label="Este mes" /> : <Empty />}
           </div>
         </div>
       </div>
 
-      <div className="grid grid-12" style={{ marginBottom: 16 }}>
+      <div className="grid grid-12 dash-reveal" style={{ marginBottom: 16 }}>
         <div className="card col-span-7">
           <div className="card-header"><h3>Donaciones por fondo</h3><span style={{ fontSize: 11, color: 'var(--muted)' }}>Mes actual</span></div>
           <div style={{ padding: 16 }}>
-            {breakdown.byFund.length > 0 ? <BarChart data={breakdown.byFund.map((d) => ({ label: d.label.slice(0, 14), value: d.value / 100 }))} height={220} accent="#1F2B38" /> : <Empty />}
+            {loading ? <ChartSkeleton height={220} /> : breakdown.byFund.length > 0 ? <BarChart data={breakdown.byFund.map((d) => ({ label: d.label.slice(0, 14), value: d.value / 100 }))} height={220} accent="#16307F" /> : <Empty />}
           </div>
         </div>
         <div className="card col-span-5">
-          <div className="card-header"><h3>Actividad reciente</h3></div>
-          <div style={{ padding: '8px 12px 16px' }}>
-            {activity.length === 0 ? (
-              <div style={{ padding: 20, color: 'var(--muted)', fontSize: 13, textAlign: 'center' }}>Sin actividad reciente.</div>
-            ) : (
-              <div className="timeline">
-                {activity.slice(0, 8).map((a) => <ActivityRow key={a.id} entry={a} />)}
-              </div>
-            )}
+          <div className="card-header">
+            <div>
+              <h3>Salud de donantes</h3>
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>Nuevos vs. recurrentes · últimos 6 meses</span>
+            </div>
+            {donorAcq?.retentionPct != null && <Badge tone="success" dot>{donorAcq.retentionPct}% retención</Badge>}
+          </div>
+          <div style={{ padding: 16 }}>
+            {loading ? <ChartSkeleton height={216} /> : donorAcq?.hasData ? (
+              <StackedBars data={donorAcq.data} height={216}
+                series={[{ key: 'existentes', label: 'Recurrentes', color: '#16307F' }, { key: 'nuevos', label: 'Nuevos', color: '#6F8AFF' }]} />
+            ) : <Empty />}
           </div>
         </div>
       </div>
 
-      <div className="grid grid-12">
+      <div className="grid grid-12 dash-reveal">
         <div className="card col-span-7">
           <div className="card-header"><h3>Campañas activas</h3></div>
           <div style={{ padding: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -134,19 +138,17 @@ export function InicioScreen({ onToast, onAction }) {
 
         <div className="card col-span-5">
           <div className="card-header">
-            <h3>Acciones pendientes</h3>
-            {pending.filter((p) => !p.done).length > 0 && (
-              <Badge tone="warning">{pending.filter((p) => !p.done).length} por completar</Badge>
-            )}
-          </div>
-          <div style={{ padding: '8px 12px 16px' }}>
-            <div className="checklist">
-              {pending.length === 0 ? (
-                <div style={{ padding: 20, color: 'var(--success)', fontSize: 13, textAlign: 'center' }}>
-                  <Icon name="check" size={20} /> Todo en orden.
-                </div>
-              ) : pending.map((p) => <CheckItem key={p.id} item={p} onNavigate={onAction} />)}
+            <div>
+              <h3>Composición del ingreso</h3>
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>Recurrente vs. puntual · últimos 6 meses</span>
             </div>
+            {income?.recurringSharePct != null && <Badge tone="info" dot>{income.recurringSharePct}% recurrente</Badge>}
+          </div>
+          <div style={{ padding: 16 }}>
+            {loading ? <ChartSkeleton height={216} /> : income?.hasData ? (
+              <StackedBars data={income.data} height={216} format={fmt}
+                series={[{ key: 'recurrente', label: 'Recurrente', color: '#16307F' }, { key: 'puntual', label: 'Puntual', color: '#9CC0EA' }]} />
+            ) : <Empty />}
           </div>
         </div>
       </div>
@@ -154,60 +156,8 @@ export function InicioScreen({ onToast, onAction }) {
   );
 }
 
-function Kpi({ icon, label, value, trend, trendLabel, sub }) {
-  return (
-    <div className="kpi">
-      <div className="kpi-label"><Icon name={icon} /> {label}</div>
-      <div className="kpi-value">{value}</div>
-      <div className="kpi-meta">
-        {trend != null && (
-          <span className={`kpi-trend ${trend >= 0 ? 'up' : 'down'}`}>
-            <Icon name={trend >= 0 ? 'arrowUp' : 'arrowDown'} size={10} /> {trend >= 0 ? '+' : ''}{trend}%
-          </span>
-        )}
-        {trendLabel && <span>{trendLabel}</span>}
-        {sub && (typeof sub === 'string' ? <span className="muted">{sub}</span> : sub)}
-      </div>
-    </div>
-  );
-}
-
 function Empty() {
   return <div style={{ padding: 30, textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>Sin datos para mostrar.</div>;
-}
-
-function ActivityRow({ entry }) {
-  const map = {
-    'donation.create': { icon: 'handHeart', tone: 'coffee', label: 'Donación registrada' },
-    'donation.update': { icon: 'edit', tone: 'navy', label: 'Donación actualizada' },
-    'donation.delete': { icon: 'x', tone: 'error', label: 'Donación eliminada' },
-    'receipt.resend': { icon: 'refresh', tone: 'navy', label: 'Recibo reenviado' },
-    'receipt.create': { icon: 'receipt', tone: 'success', label: 'Recibo generado' },
-    'portal.publish': { icon: 'upload', tone: 'warning', label: 'Portal publicado' },
-    'church.update': { icon: 'settings', tone: 'muted', label: 'Configuración actualizada' },
-    'church_users.invite': { icon: 'users', tone: 'coffee', label: 'Usuario invitado' },
-    'church_users.accept': { icon: 'check', tone: 'success', label: 'Invitación aceptada' },
-  };
-  const info = map[entry.action] || { icon: 'info', tone: 'muted', label: entry.action };
-
-  // Build human description
-  let text = info.label;
-  if (entry.action === 'donation.create' && entry.after_data) {
-    const amt = entry.after_data.amount_cents ? formatMoney(entry.after_data.amount_cents) : '';
-    text = `Nueva donación ${amt}`;
-  } else if (entry.action === 'receipt.resend' && entry.metadata) {
-    text = `Recibo reenviado · ${entry.metadata.reason || ''}`;
-  }
-
-  return (
-    <div className="timeline-item">
-      <div className={`timeline-dot ${info.tone}`}><Icon name={info.icon} /></div>
-      <div className="timeline-body">
-        <p>{text}</p>
-        <span>{formatRelativeTime(entry.created_at)}</span>
-      </div>
-    </div>
-  );
 }
 
 function CampaignCard({ campaign }) {
@@ -242,21 +192,3 @@ function CampaignCard({ campaign }) {
   );
 }
 
-function CheckItem({ item, onNavigate }) {
-  return (
-    <div className={`check-item ${item.done ? 'done' : ''}`}>
-      <div className={`check-box ${item.done ? 'done' : ''}`}>
-        {item.done && <Icon name="check" size={11} />}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="label">{item.label}</div>
-        <div className="meta">{item.meta}</div>
-      </div>
-      {!item.done && item.action && item.actionTarget && (
-        <button className="btn btn-sm btn-coffee" onClick={() => onNavigate?.(item.actionTarget === 'configuracion' ? 'publicar' : item.actionTarget)}>
-          {item.action}
-        </button>
-      )}
-    </div>
-  );
-}

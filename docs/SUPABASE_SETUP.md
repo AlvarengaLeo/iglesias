@@ -589,3 +589,204 @@ ORDER BY pg_relation_size(relid) DESC;
 ### pg_cron job no se ejecuta
 - Solo en Supabase Pro+ plan.
 - Verificar con `SELECT * FROM cron.job_run_details ORDER BY start_time DESC LIMIT 5`.
+- En Fase 13 dejamos de depender de pg_cron: `mv_church_monthly_donations` ya no se consulta desde el frontend. Se reemplazó por `rpc_monthly_donations_series` (real-time). La mv queda en la base pero no se refresca automáticamente.
+
+---
+
+## 14. Storage (agregado en Fase 13)
+
+### Bucket `church-assets`
+
+- Aplicado por migración `20260530120003_storage.sql`.
+- Visibilidad: **público** (necesario para `<img>` en el portal anónimo).
+- Límite por archivo: **2 MB**.
+- MIME permitidos: `image/png`, `image/jpeg`, `image/webp`, `image/svg+xml`.
+- Convención de paths:
+  ```
+  {church_id}/logo/{timestamp}.{ext}
+  {church_id}/hero/{timestamp}.{ext}
+  {church_id}/signature/{timestamp}.{ext}
+  ```
+
+### Policies
+
+- `SELECT` → público (`true`) — necesario para portal anónimo.
+- `INSERT / UPDATE / DELETE` → autenticado **y** primer segmento del path ∈ `user_church_ids()`. Esto garantiza que un usuario solo puede tocar assets de su propia iglesia.
+
+### Verificación rápida
+
+```bash
+node -e "
+const { createClient } = require('@supabase/supabase-js');
+const sb = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+sb.storage.listBuckets().then(({data}) => console.log(data));
+"
+```
+
+### Bucket privado para recibos (futuro)
+
+Los PDFs de recibos **no** van a `church-assets`. Cuando se generen server-side se subirán a `church-receipts-private` con `public=false`, accedidos vía signed URLs con expiración corta. Fuera del scope de Fase 13.
+
+---
+
+## 15. Edge Functions (agregado en Fase 13)
+
+### Funciones desplegadas
+
+| Function | Descripción | Secrets |
+|---|---|---|
+| `invite-user` | Invita un nuevo usuario a la iglesia. Valida JWT del caller, exige rol `admin`, inserta `church_invitations` y dispara email via Supabase Auth nativo. | Ninguno — usa `SUPABASE_SERVICE_ROLE_KEY` inyectada automáticamente. |
+
+### Deploy
+
+```bash
+npx supabase functions deploy invite-user --no-verify-jwt
+```
+
+Usamos `--no-verify-jwt` porque la función valida el JWT manualmente dentro de `_shared/auth.ts` (necesario para distinguir 401 vs 403 con códigos de error claros).
+
+### Cómo probar `invite-user`
+
+#### Via UI
+1. Login como `miguel@casaderestauracion.org` (rol admin).
+2. Configuración → "Invitar usuario".
+3. Llenar email + rol → "Enviar invitación".
+4. Confirmar toast "Invitación enviada".
+5. Verificar fila en `church_invitations` (con `service_role`).
+6. El invitee recibe email de Supabase Auth con link a `/#accept-invite?token=...`.
+
+#### Via curl
+```bash
+curl -X POST "https://dcmdcmpqowwntdtkrlfm.supabase.co/functions/v1/invite-user" \
+  -H "Authorization: Bearer <USER_JWT>" \
+  -H "apikey: <PUBLISHABLE_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "nueva-persona@iglesia.org",
+    "role": "secretary",
+    "church_id": "c1ec1ec1-0000-0000-0000-000000000001"
+  }'
+```
+
+Códigos esperados:
+- `200` → `{ invitation_id, expires_at, email, role }`
+- `400` → `invalid_email` | `invalid_role` | `invalid_church_id`
+- `401` → `missing_authorization` | `invalid_session`
+- `403` → `forbidden` (caller no es admin) | `admin_role_blocked`
+- `409` → `invitation_already_pending` | `user_already_exists`
+- `500` → `auth_invite_failed` (dominio rechazado, SMTP, etc.)
+
+### Email del invite
+
+Lo envía el SMTP nativo de Supabase Auth (no requiere Resend en esta fase). Si el dominio del destinatario es bloqueado (ej. `example.com`), la función auto-revoca la invitación huérfana antes de devolver el error.
+
+---
+
+## 16. Donation Intents (agregado en Fase 14)
+
+### Tabla `donation_intents`
+
+Creada por `supabase/migrations/20260601120001_donation_intents.sql`. Una fila por intención pública de donación.
+
+**Columnas clave**:
+- `church_id`, `fund_id`, `campaign_id` (FK)
+- `donor_type` (individual/business/anonymous), datos del donor
+- `amount_cents`, `frequency` (one_time/monthly/annual)
+- `status` (pending_payment/payment_provider_pending/completed/canceled/expired/failed)
+- `donation_id` (FK a donations cuando se convierte)
+- `provider_*` (Stripe-ready, null hasta wire)
+- `expires_at` (90 días por defecto)
+
+**RLS**:
+- SELECT: cualquier miembro activo de la iglesia.
+- UPDATE: admin/pastor/treasurer/secretary.
+- INSERT directo: BLOQUEADO. Solo via `rpc_create_public_donation_intent` (SECURITY DEFINER).
+- DELETE: BLOQUEADO. Use cancel via UPDATE.
+
+### RPCs nuevas
+
+| RPC | Caller | Propósito |
+|---|---|---|
+| `rpc_create_public_donation_intent(...)` | anon (público) | Crea intent con validación server-side (honeypot, rate limit, email, monto, fondo, campaña). |
+| `rpc_link_intent_to_donation(intent_id, donation_id)` | authenticated | Marca intent.status='completed' y enlaza al donation real. |
+| `rpc_update_intent_status(intent_id, action, notes)` | authenticated | action='mark_contacted' o 'cancel'. |
+| `rpc_public_portal_by_slug` (extendida) | anon | Ahora devuelve además `funds[]` y `payment_available`. |
+
+### Verificación rápida
+
+```bash
+# Anon NO puede listar intents
+node -e "
+const { createClient } = require('@supabase/supabase-js');
+const anon = createClient(URL, ANON_KEY);
+anon.from('donation_intents').select('*').then(r => console.log('rows:', r.data?.length || 0));
+"
+
+# Crear intent pública via RPC
+node -e "
+const anon = createClient(URL, ANON_KEY);
+anon.rpc('rpc_create_public_donation_intent', {
+  p_church_slug: 'casa-de-restauracion',
+  p_amount_cents: 2500,
+  p_frequency: 'one_time',
+  p_donor_type: 'individual',
+  p_donor_email: 'test@ex.com',
+  p_donor_first_name: 'T',
+  p_donor_last_name: 'Test',
+}).then(r => console.log(r.data));
+"
+```
+
+### Errores esperados de la RPC pública
+
+| Código (SQLSTATE) | Mensaje |
+|---|---|
+| P0001 | church_not_found_or_not_published |
+| P0002 | invalid_amount |
+| P0003 | invalid_frequency |
+| P0004 | invalid_donor_type |
+| P0005 | invalid_email |
+| P0006 | individual_donor_requires_name |
+| P0007 | business_donor_requires_name |
+| P0008 | campaign_not_available |
+| P0009 | fund_not_available |
+| P0010 | no_default_fund_for_church |
+| P0011 | rate_limited |
+
+### Wirear Stripe en el futuro
+
+Ver `docs/DONATION_FLOW.md` §8 (los 4 pasos completos: env vars, Edge Functions, habilitar `payment_available`, frontend).
+
+---
+
+## Fase 15 — Tablas y RPCs de contenido del portal
+
+Migraciones `20260602120001..06` (additivas — no modifican migraciones previas).
+
+### Tablas nuevas
+- `sermons` — title, speaker, series, scripture_reference, sermon_date, description, video_url, audio_url, thumbnail_url, duration_seconds. CHECK: video_url OR audio_url.
+- `events` — title, description, starts_at, ends_at (≥ starts_at), location, address (público), image_url, registration_url, category, is_featured.
+- `podcast_episodes` — title, description, season, episode_number, spotify_url, apple_url, youtube_url, audio_url, cover_image_url, published_at, duration_seconds. UNIQUE parcial (church_id, season, episode_number).
+- `projects` — name, description, category (ministry|project|mission), image_url, link_url, leader_name, is_featured.
+
+Todas con spine `church_id` (ON DELETE RESTRICT), `is_visible_on_portal`, `sort_order`, `created_by`, `deleted_at`, timestamps + trigger `set_updated_at` + `audit_changes`.
+
+### RLS
+SELECT: miembros de la iglesia. ALL (INSERT/UPDATE/DELETE): `admin/pastor/secretary`. Sin policy anon — lectura pública solo vía RPCs SECURITY DEFINER. Borrado real = soft (`deleted_at`).
+
+### RPCs públicas (GRANT anon + authenticated, gate publish_status='published')
+- `rpc_public_sermons_by_slug(p_slug, p_limit=12, p_offset=0, p_series=NULL)` → `{ total, limit, offset, series[], items[] }`
+- `rpc_public_sermon_by_id(p_slug, p_id)` → sermón individual o NULL
+- `rpc_public_podcast_by_slug(p_slug, p_limit=12, p_offset=0)` → `{ total, limit, offset, items[] }`
+- `rpc_public_events_by_slug(p_slug)` → `{ items[] }` (próximos, starts_at ≥ now())
+- `rpc_public_projects_by_slug(p_slug)` → `{ items[] }`
+- `rpc_public_portal_by_slug(p_slug)` **extendido** — agrega `latestSermons`, `upcomingEvents`, `featuredProjects`, `latestPodcast`.
+
+### Storage
+Sin migración nueva: el `kind` no se valida en la policy DB (solo `bucket_id` + carpeta = church_id). Kinds nuevos (`sermon_thumb`, `event_image`, `podcast_cover`, `project_image`) se agregaron en `src/lib/storage.js` (client-side).
+
+### Aplicar
+```
+npx supabase db push      # aplica las 6 migraciones nuevas
+npx supabase migration list
+```

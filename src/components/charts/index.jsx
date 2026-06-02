@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
+import { CountUp } from '../CountUp.jsx';
 
 const formatMoney = (n) => '$' + n.toLocaleString('en-US');
 
 // =========================================================
 // LineChart
 // =========================================================
-export function LineChart({ data, height = 220, accent = '#8A6A4A', selectedIndex = null, onSelect }) {
+export function LineChart({ data, height = 220, accent = '#2348C4', selectedIndex = null, onSelect }) {
   const containerRef = useRef(null);
   const [hover, setHover] = useState(selectedIndex);
   const [w, setW] = useState(600);
@@ -13,7 +14,10 @@ export function LineChart({ data, height = 220, accent = '#8A6A4A', selectedInde
   useEffect(() => {
     if (!containerRef.current) return;
     const ro = new ResizeObserver((entries) => {
-      setW(entries[0].contentRect.width);
+      // Ignorar ancho 0 (pantalla oculta por keep-alive): conserva el último
+      // ancho válido para que el gráfico se vea correcto al volver, sin flash.
+      const cw = entries[0].contentRect.width;
+      if (cw > 0) setW(cw);
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
@@ -73,11 +77,11 @@ export function LineChart({ data, height = 220, accent = '#8A6A4A', selectedInde
             {p.label}
           </text>
         ))}
-        <path d={areaStr} fill="url(#line-gradient)" />
-        <path d={pathStr} fill="none" stroke={accent} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+        <path className="ch-fade" style={{ animationDelay: '.2s' }} d={areaStr} fill="url(#line-gradient)" />
+        <path className="ch-draw" pathLength="1" d={pathStr} fill="none" stroke={accent} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
         {points.map((p, i) => (
           <g key={i}>
-            <circle cx={p.x} cy={p.y} r={activeIdx === i ? 5 : 3.5} fill={accent} stroke="#fff" strokeWidth="2" />
+            <circle className="ch-fade" style={{ animationDelay: `${0.85 + i * 0.05}s` }} cx={p.x} cy={p.y} r={activeIdx === i ? 5 : 3.5} fill={accent} stroke="#fff" strokeWidth="2" />
             <rect
               x={p.x - xStep / 2}
               y={padding.top}
@@ -97,7 +101,7 @@ export function LineChart({ data, height = 220, accent = '#8A6A4A', selectedInde
             y1={padding.top}
             x2={active.x}
             y2={padding.top + innerH}
-            stroke="#1F2B38"
+            stroke="#16307F"
             strokeDasharray="3 3"
             strokeOpacity="0.3"
           />
@@ -116,14 +120,17 @@ export function LineChart({ data, height = 220, accent = '#8A6A4A', selectedInde
 // =========================================================
 // BarChart
 // =========================================================
-export function BarChart({ data, height = 220, accent = '#1F2B38', highlightIndex = null }) {
+export function BarChart({ data, height = 220, accent = '#16307F', highlightIndex = null }) {
   const containerRef = useRef(null);
   const [hover, setHover] = useState(null);
   const [w, setW] = useState(600);
 
   useEffect(() => {
     if (!containerRef.current) return;
-    const ro = new ResizeObserver((entries) => setW(entries[0].contentRect.width));
+    const ro = new ResizeObserver((entries) => {
+      const cw = entries[0].contentRect.width;
+      if (cw > 0) setW(cw);
+    });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, []);
@@ -160,16 +167,17 @@ export function BarChart({ data, height = 220, accent = '#1F2B38', highlightInde
           return (
             <g key={i}>
               <rect
+                className="ch-bar"
                 x={x}
                 y={y}
                 width={barW}
                 height={h}
                 rx="6"
-                fill={isHighlight ? '#8A6A4A' : accent}
+                fill={isHighlight ? '#2348C4' : accent}
                 opacity={hover != null && !isHover ? 0.55 : 1}
                 onMouseEnter={() => setHover(i)}
                 onMouseLeave={() => setHover(null)}
-                style={{ cursor: 'pointer', transition: 'opacity 0.15s' }}
+                style={{ cursor: 'pointer', transition: 'opacity 0.15s', animationDelay: `${i * 0.06}s` }}
               />
               <text x={x + barW / 2} y={height - 14} textAnchor="middle" fontSize="11" fill="#66727D" fontWeight="500">
                 {d.label}
@@ -232,17 +240,19 @@ export function DonutChart({ data, size = 200, total, label = 'Total' }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 24, width: '100%' }}>
       <div style={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
         <svg width={size} height={size}>
-          {slices.map((s, i) => (
-            <path
-              key={i}
-              d={arc(s.start, s.end)}
-              fill={s.color}
-              opacity={hover != null && hover !== i ? 0.45 : 1}
-              onMouseEnter={() => setHover(i)}
-              onMouseLeave={() => setHover(null)}
-              style={{ transition: 'opacity 0.15s', cursor: 'pointer' }}
-            />
-          ))}
+          <g className="ch-zoom">
+            {slices.map((s, i) => (
+              <path
+                key={i}
+                d={arc(s.start, s.end)}
+                fill={s.color}
+                opacity={hover != null && hover !== i ? 0.45 : 1}
+                onMouseEnter={() => setHover(i)}
+                onMouseLeave={() => setHover(null)}
+                style={{ transition: 'opacity 0.15s', cursor: 'pointer' }}
+              />
+            ))}
+          </g>
         </svg>
         <div
           style={{
@@ -264,7 +274,7 @@ export function DonutChart({ data, size = 200, total, label = 'Total' }) {
           ) : (
             <>
               <div style={{ fontSize: 11, color: 'var(--muted)' }}>{label}</div>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>{formatMoney(sum)}</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}><CountUp value={sum} format={formatMoney} /></div>
             </>
           )}
         </div>
@@ -301,7 +311,7 @@ export function DonutChart({ data, size = 200, total, label = 'Total' }) {
 // =========================================================
 // HBarChart
 // =========================================================
-export function HBarChart({ data, color = '#8A6A4A' }) {
+export function HBarChart({ data, color = '#2348C4' }) {
   const max = Math.max(...data.map((d) => d.value));
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -314,7 +324,7 @@ export function HBarChart({ data, color = '#8A6A4A' }) {
             </span>
           </div>
           <div style={{ height: 8, background: 'var(--bg-2)', borderRadius: 999, overflow: 'hidden' }}>
-            <div style={{ width: `${(d.value / max) * 100}%`, height: '100%', background: color, borderRadius: 999 }}></div>
+            <div className="ch-bar-h" style={{ width: `${(d.value / max) * 100}%`, height: '100%', background: color, borderRadius: 999, animationDelay: `${i * 0.08}s` }}></div>
           </div>
         </div>
       ))}
@@ -325,7 +335,7 @@ export function HBarChart({ data, color = '#8A6A4A' }) {
 // =========================================================
 // Sparkline
 // =========================================================
-export function Sparkline({ data, color = '#8A6A4A', width = 80, height = 28 }) {
+export function Sparkline({ data, color = '#2348C4', width = 80, height = 28 }) {
   const max = Math.max(...data);
   const min = Math.min(...data);
   const step = width / (data.length - 1);
@@ -336,6 +346,103 @@ export function Sparkline({ data, color = '#8A6A4A', width = 80, height = 28 }) 
     <svg width={width} height={height} style={{ display: 'block' }}>
       <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  );
+}
+
+// =========================================================
+// StackedBars — interactive stacked bar chart (BI widgets)
+// data: [{ label, values: { [key]: number } }]
+// series: [{ key, label, color }]
+// =========================================================
+export function StackedBars({ data, series, height = 210, format = (v) => v }) {
+  const containerRef = useRef(null);
+  const [hover, setHover] = useState(null);
+  const [w, setW] = useState(480);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const cw = entries[0].contentRect.width;
+      if (cw > 0) setW(cw);
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  const padding = { top: 14, right: 12, bottom: 30, left: 46 };
+  const innerW = w - padding.left - padding.right;
+  const innerH = height - padding.top - padding.bottom;
+  const totals = data.map((d) => series.reduce((s, se) => s + (d.values[se.key] || 0), 0));
+  const max = Math.max(1, ...totals) * 1.12;
+  const slot = innerW / (data.length || 1);
+  const barW = Math.min(40, slot * 0.58);
+  const yTicks = [0, 0.5, 1].map((t) => ({ y: padding.top + innerH - t * innerH, label: format(Math.round(t * max)) }));
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', width: '100%' }}>
+      <svg className="chart-svg" width={w} height={height}>
+        {yTicks.map((t, i) => (
+          <g key={i}>
+            <line x1={padding.left} y1={t.y} x2={w - padding.right} y2={t.y} stroke="#EEF0F3" />
+            <text x={padding.left - 8} y={t.y + 4} textAnchor="end" fontSize="10" fill="#8A95A0">{t.label}</text>
+          </g>
+        ))}
+        {data.map((d, i) => {
+          const cx = padding.left + slot * i + slot / 2;
+          const x = cx - barW / 2;
+          const isDim = hover != null && hover !== i;
+          let yCursor = padding.top + innerH;
+          const lastNonZero = [...series].reverse().find((se) => (d.values[se.key] || 0) > 0)?.key;
+          return (
+            <g key={i}>
+              <g className="ch-bar" style={{ animationDelay: `${i * 0.06}s` }}>
+                {series.map((se) => {
+                  const v = d.values[se.key] || 0;
+                  const h = (v / max) * innerH;
+                  yCursor -= h;
+                  return (
+                    <rect key={se.key} x={x} y={yCursor} width={barW} height={Math.max(0, h)}
+                      rx={se.key === lastNonZero ? 5 : 0} fill={se.color}
+                      opacity={isDim ? 0.45 : 1} style={{ transition: 'opacity 0.15s' }} />
+                  );
+                })}
+              </g>
+              <rect x={padding.left + slot * i} y={padding.top} width={slot} height={innerH} fill="transparent"
+                onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} style={{ cursor: 'pointer' }} />
+              <text x={cx} y={height - 10} textAnchor="middle" fontSize="11" fill="#66727D" fontWeight="500">{d.label}</text>
+            </g>
+          );
+        })}
+      </svg>
+      {hover != null && (() => {
+        const d = data[hover];
+        const cx = padding.left + slot * hover + slot / 2;
+        const total = series.reduce((s, se) => s + (d.values[se.key] || 0), 0);
+        return (
+          <div className="chart-tooltip" style={{ left: Math.max(4, Math.min(cx - 75, w - 154)), top: 2, width: 150 }}>
+            <div className="tt-label" style={{ marginBottom: 4 }}>{d.label}</div>
+            {series.map((se) => (
+              <div key={se.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '1px 0' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 2, background: se.color }} />{se.label}
+                </span>
+                <b>{format(d.values[se.key] || 0)}</b>
+              </div>
+            ))}
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, paddingTop: 4, marginTop: 3, borderTop: '1px solid rgba(255,255,255,0.18)', opacity: 0.85 }}>
+              <span>Total</span><b>{format(total)}</b>
+            </div>
+          </div>
+        );
+      })()}
+      <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginTop: 6 }}>
+        {series.map((se) => (
+          <span key={se.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)' }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: se.color }} />{se.label}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 

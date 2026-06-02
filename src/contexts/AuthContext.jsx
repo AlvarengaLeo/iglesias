@@ -1,9 +1,8 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { supabase } from '../lib/supabase.js';
 
 const AuthContext = createContext(null);
 
-export function AuthProvider({ children }) {
+export function AuthProvider({ children, client, signOutScope = 'global' }) {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   // Flag para distinguir logout manual del usuario vs SIGNED_OUT espurio
@@ -12,7 +11,7 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
+    client.auth.getSession().then(({ data }) => {
       if (!mounted) return;
       // Detectar clock skew: si el JWT exp parece "ya expirado" pero acabamos
       // de obtener una sesión válida, el reloj del cliente está mal sincronizado.
@@ -30,7 +29,7 @@ export function AuthProvider({ children }) {
       setSession(data.session);
       setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+    const { data: sub } = client.auth.onAuthStateChange((event, s) => {
       // Defensa contra logouts espurios cuando el cliente tiene clock skew
       // o cuando Supabase rate-limita el refresh: NO procesamos SIGNED_OUT
       // a menos que el usuario explícitamente hizo signOut() (manualLogoutRef).
@@ -42,7 +41,7 @@ export function AuthProvider({ children }) {
         }
         console.warn('[supabase auth] SIGNED_OUT espurio ignorado (no fue acción del usuario). Posiblemente clock skew o rate limit del refresh.');
         // Verificamos storage por si todavía hay sesión utilizable
-        supabase.auth.getSession().then(({ data }) => {
+        client.auth.getSession().then(({ data }) => {
           if (mounted && data.session) setSession(data.session);
         });
         return;
@@ -54,7 +53,7 @@ export function AuthProvider({ children }) {
     // de Supabase (sin forzar refresh — eso lo hace el autoRefreshToken solo).
     const onVisible = async () => {
       if (document.visibilityState !== 'visible') return;
-      const { data } = await supabase.auth.getSession();
+      const { data } = await client.auth.getSession();
       if (mounted && data?.session) setSession(data.session);
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -64,21 +63,21 @@ export function AuthProvider({ children }) {
       sub.subscription.unsubscribe();
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, []);
+  }, [client]);
 
   const signIn = useCallback(async (email, password) => {
-    return supabase.auth.signInWithPassword({ email, password });
+    return client.auth.signInWithPassword({ email, password });
   }, []);
 
   const signOut = useCallback(async () => {
     // Marcar que ESTE logout es intencional del usuario, para que
     // onAuthStateChange propague el SIGNED_OUT en lugar de filtrarlo.
     manualLogoutRef.current = true;
-    return supabase.auth.signOut();
+    return client.auth.signOut({ scope: signOutScope });
   }, []);
 
   const sendPasswordReset = useCallback(async (email) => {
-    return supabase.auth.resetPasswordForEmail(email, {
+    return client.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/#reset-password`,
     });
   }, []);
@@ -88,7 +87,7 @@ export function AuthProvider({ children }) {
     if (clearMustChange) {
       updates.data = { must_change_password: false };
     }
-    return supabase.auth.updateUser(updates);
+    return client.auth.updateUser(updates);
   }, []);
 
   const user = session?.user ?? null;

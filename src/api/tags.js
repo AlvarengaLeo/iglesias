@@ -41,7 +41,7 @@ export async function unassignTag(personId, tagId) {
 export async function createTag(churchId, { name, color }) {
   const { data, error } = await supabase
     .from('person_tags')
-    .insert({ church_id: churchId, name: name.trim(), color: color || '#8A6A4A' })
+    .insert({ church_id: churchId, name: name.trim(), color: color || '#2348C4' })
     .select()
     .single();
   if (error) throw error;

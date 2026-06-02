@@ -14,7 +14,7 @@
   padding: 24px 16px;
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, #1F2B38 0%, #2B3A4A 100%);
+  background: linear-gradient(135deg, #16307F 0%, #1E3C94 100%);
 }
 
 .auth-bg {
@@ -22,8 +22,8 @@
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at 15% 20%, rgba(184, 154, 122, 0.18), transparent 50%),
-    radial-gradient(circle at 85% 80%, rgba(138, 106, 74, 0.12), transparent 55%);
+    radial-gradient(circle at 15% 20%, rgba(35, 72, 196, 0.28), transparent 50%),
+    radial-gradient(circle at 85% 80%, rgba(156, 192, 234, 0.14), transparent 55%);
 }
 
 /* ===== Card ===== */
@@ -49,7 +49,7 @@
 
 .auth-title {
   margin: 0 0 8px;
-  color: #1F2B38;
+  color: #16307F;
   font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -105,8 +105,8 @@
 
 .auth-form .field input:focus {
   outline: none;
-  border-color: #1F2B38;
-  box-shadow: 0 0 0 4px rgba(31, 43, 56, 0.08);
+  border-color: #2348C4;
+  box-shadow: 0 0 0 4px rgba(35, 72, 196, 0.14);
 }
 
 /* ===== Password field with eye toggle ===== */
@@ -139,11 +139,11 @@
 
 .password-toggle:hover {
   background: #F1F3F6;
-  color: #1F2B38;
+  color: #16307F;
 }
 
 .password-toggle:focus-visible {
-  outline: 2px solid #8A6A4A;
+  outline: 2px solid #2348C4;
   outline-offset: 1px;
 }
 
@@ -192,7 +192,7 @@
 }
 
 .auth-submit:hover:not(:disabled) {
-  background: #2B3A4A;
+  background: #1E3C94;
 }
 
 .auth-submit:active:not(:disabled) {
@@ -216,7 +216,7 @@
 .auth-foot .subtle-link {
   background: none;
   border: none;
-  color: #8A6A4A;
+  color: #2348C4;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -227,12 +227,12 @@
 }
 
 .auth-foot .subtle-link:hover {
-  color: #79593F;
-  background: rgba(138, 106, 74, 0.06);
+  color: #16307F;
+  background: rgba(35, 72, 196, 0.07);
 }
 
 .auth-foot .subtle-link:focus-visible {
-  outline: 2px solid #8A6A4A;
+  outline: 2px solid #2348C4;
   outline-offset: 2px;
 }
 
@@ -249,7 +249,7 @@
   width: 32px;
   height: 32px;
   border: 3px solid #E5E8EC;
-  border-top-color: #8A6A4A;
+  border-top-color: #2348C4;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }

@@ -44,3 +44,13 @@ export async function updateChurchLocale(churchId, locale) {
   }
   return updateChurch(churchId, { locale });
 }
+
+// Update only the logo URL. Pass null to clear.
+export async function updateChurchLogoUrl(churchId, logoUrl) {
+  return updateChurch(churchId, { logo_url: logoUrl });
+}
+
+// Update only the favicon URL (browser-tab icon of the public portal). null clears.
+export async function updateChurchFaviconUrl(churchId, faviconUrl) {
+  return updateChurch(churchId, { favicon_url: faviconUrl });
+}

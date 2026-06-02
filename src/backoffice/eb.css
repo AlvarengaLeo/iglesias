@@ -1,0 +1,154 @@
+/* EB Connect — Backoffice. Reusa los tokens/clases de /styles.css; solo añade
+   lo específico del backoffice (auth, tabs de detalle, grids de stats). */
+
+.eb-auth {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  padding: 24px;
+}
+.eb-auth-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.eb-auth-logo { display: flex; justify-content: center; margin-bottom: 6px; }
+.eb-auth-logo img { width: 60px; height: 60px; border-radius: 15px; box-shadow: 0 8px 22px rgba(22, 48, 127, 0.32); }
+.eb-auth-brand { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; color: var(--navy); line-height: 1; text-align: center; }
+.eb-auth-sub { font-size: 13px; color: var(--muted); margin-top: -6px; margin-bottom: 10px; text-align: center; }
+
+/* Backoffice sidebar logo (white over the dark sidebar) */
+.eb-bo-logo { height: 26px; width: auto; display: block; filter: brightness(0) invert(1); }
+.sidebar-brand .eb-bo-logo { margin-right: auto; }
+.eb-auth-card .field { display: flex; flex-direction: column; gap: 6px; }
+.eb-auth-card .field span { font-size: 13px; font-weight: 600; color: var(--text); }
+.eb-auth-error { background: var(--error-bg); color: var(--error); padding: 10px 12px; border-radius: 10px; font-size: 13px; }
+
+.eb-boot { min-height: 100vh; display: grid; place-items: center; background: var(--bg); }
+
+/* Stat grid (KPI cards) */
+.eb-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 14px;
+}
+
+/* Tabs del detalle de iglesia */
+.eb-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.eb-tab {
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.eb-tab:hover { color: var(--text); }
+.eb-tab.active { color: var(--navy); border-bottom-color: var(--coffee); }
+
+/* ===== Dashboard BI (Fase 4) ===== */
+.eb-dash-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.eb-period { display: inline-flex; background: var(--bg-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px; gap: 2px; }
+.eb-period button {
+  border: none; background: none; cursor: pointer; font-size: 13px; font-weight: 600;
+  color: var(--muted); padding: 6px 14px; border-radius: 999px; transition: background .15s, color .15s;
+}
+.eb-period button.active { background: var(--card); color: var(--navy); box-shadow: var(--shadow-sm); }
+
+.eb-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
+@media (max-width: 1100px) { .eb-kpis { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .eb-kpis { grid-template-columns: 1fr; } }
+.eb-kpi {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: 16px 18px; text-align: left; cursor: pointer; transition: transform .12s, box-shadow .12s, border-color .12s;
+  display: flex; flex-direction: column; gap: 4px; min-height: 92px;
+}
+.eb-kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: var(--coffee); }
+.eb-kpi.static { cursor: default; }
+.eb-kpi.static:hover { transform: none; box-shadow: none; border-color: var(--border); }
+.eb-kpi-label { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.eb-kpi-value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; color: var(--navy); line-height: 1.1; }
+.eb-kpi-foot { font-size: 11.5px; color: var(--muted); margin-top: auto; }
+.eb-kpi.alert .eb-kpi-value { color: var(--error); }
+
+.eb-charts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 18px; }
+@media (max-width: 900px) { .eb-charts { grid-template-columns: 1fr; } }
+.eb-chart-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 18px 20px; }
+.eb-chart-card h3 { margin: 0 0 2px; font-size: 15px; font-weight: 700; color: var(--navy); }
+.eb-chart-card .sub { margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
+
+.eb-health { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+@media (max-width: 900px) { .eb-health { grid-template-columns: 1fr; } }
+.eb-health-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 0; border-top: 1px solid var(--border); font-size: 13px;
+}
+.eb-health-row:first-of-type { border-top: none; }
+.eb-health-row a { color: var(--coffee); font-weight: 600; text-decoration: none; cursor: pointer; }
+.eb-health-row a:hover { text-decoration: underline; }
+.eb-health-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+
+/* ===== Onboarding (Fase 5) ===== */
+.eb-onb-progress { height: 12px; background: var(--bg-2); border-radius: 999px; overflow: hidden; }
+.eb-onb-progress > div { height: 100%; background: linear-gradient(90deg, #8A6A4A, #5E8B7E); border-radius: 999px; transition: width .5s ease; }
+.eb-onb-group-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 18px 0 8px; }
+.eb-onb-row {
+  display: flex; align-items: center; gap: 12px; padding: 11px 12px;
+  border: 1px solid var(--border); border-radius: 12px; margin-bottom: 8px; background: var(--card);
+}
+.eb-onb-check {
+  width: 22px; height: 22px; border-radius: 7px; flex-shrink: 0; display: grid; place-items: center;
+  border: 2px solid var(--border); color: #fff; font-size: 13px; font-weight: 700;
+}
+.eb-onb-check.done { background: #5E8B7E; border-color: #5E8B7E; }
+.eb-onb-check.blocked { background: var(--error); border-color: var(--error); }
+.eb-onb-row .t { flex: 1; font-size: 14px; font-weight: 600; }
+.eb-onb-row .t small { display: block; font-weight: 500; color: var(--muted); font-size: 12px; }
+
+/* ===== Soporte (Fase 6) ===== */
+.eb-thread { display: flex; flex-direction: column; gap: 12px; }
+.eb-msg { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--card); }
+.eb-msg.internal { background: #FFF8EC; border-color: #F0DCB8; }
+.eb-msg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.eb-msg-head strong { font-size: 13px; }
+.eb-msg-head .when { font-size: 12px; color: var(--muted); }
+.eb-msg-body { font-size: 14px; white-space: pre-wrap; line-height: 1.5; }
+.eb-msg-internal-tag { font-size: 11px; font-weight: 700; color: #B07A1E; text-transform: uppercase; letter-spacing: .03em; }
+
+/* ===== Configuración (Fase 7) ===== */
+.eb-flag-row { display: flex; align-items: center; gap: 16px; padding: 13px 18px; border-bottom: 1px solid var(--border-soft); }
+.eb-flag-row:last-child { border-bottom: none; }
+.eb-switch { position: relative; cursor: pointer; flex-shrink: 0; }
+.eb-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.eb-switch-track { display: block; width: 42px; height: 24px; background: var(--border); border-radius: 999px; transition: background .18s; }
+.eb-switch-thumb { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,.2); transition: transform .18s; }
+.eb-switch.on .eb-switch-track { background: #5E8B7E; }
+.eb-switch.on .eb-switch-thumb { transform: translateX(18px); }
+.eb-switch.busy { opacity: .6; }
+
+/* Spinner de fallback (por si /styles.css no define .spinner) */
+.spinner {
+  width: 28px; height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--coffee);
+  border-radius: 50%;
+  animation: eb-spin 0.7s linear infinite;
+}
+@keyframes eb-spin { to { transform: rotate(360deg); } }

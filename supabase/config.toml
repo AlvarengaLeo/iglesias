@@ -406,3 +406,24 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 # declarative_schema_path = "./database"
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
+
+# Called by anonymous site visitors (no logged-in user) → public.
+[functions.eb-create-subscription]
+verify_jwt = false
+
+# Stripe calls the webhook with no Supabase JWT → it must be public.
+[functions.eb-stripe-webhook]
+verify_jwt = false
+
+# Donation Connect: stripe-connect requires a logged-in church admin/treasurer.
+# JWT is verified by the platform AND re-checked in the function (authenticate()).
+[functions.stripe-connect]
+verify_jwt = true
+
+# create-donation-payment is called by anonymous portal visitors → public.
+[functions.create-donation-payment]
+verify_jwt = false
+
+# Stripe calls the Connect webhook with no Supabase JWT → it must be public.
+[functions.stripe-connect-webhook]
+verify_jwt = false

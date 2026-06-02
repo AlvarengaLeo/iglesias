@@ -1,30 +1,33 @@
-// ConfiguracionScreen — Fase 5: conectado a Supabase.
-// 6 secciones: datos iglesia, usuarios, Stripe (lectura), recibos, idioma, suscripción.
+// ConfiguracionScreen — conectado a Supabase.
+// 7 secciones: identidad visual (logo), datos iglesia, usuarios, Stripe (lectura), recibos, idioma, suscripción.
 //
 // Lo que NO está en esta fase (intencional):
-//   - Invitar usuario real (Edge Function pendiente; botón es stub)
 //   - Conectar Stripe real (sólo lectura del estado; botón stub)
 //   - Ver facturación real (link a Stripe portal, stub)
-//   - Upload de logo (sin Storage bucket aún; botón stub)
 
 import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../components/Icon.jsx';
 import { Badge } from '../components/Badge.jsx';
+import { AssetUploader } from '../components/AssetUploader.jsx';
 import { useChurch } from '../hooks/useChurch.js';
 import { useRole } from '../hooks/useRole.js';
 import {
   updateChurch,
   updateChurchReceiptTemplate,
   updateChurchLocale,
+  updateChurchLogoUrl,
 } from '../api/churches.js';
+import { onboardStripe, refreshStripeStatus, openStripeDashboard } from '../api/stripeConnect.js';
 import {
   listChurchUsers,
   updateUserRole,
   setUserActive,
-  inviteUserStub,
+  inviteUser,
   roleLabel,
   roleTone,
 } from '../api/users.js';
+import { listPeople } from '../api/people.js';
+import { deleteChurchAsset, pathFromPublicUrl } from '../lib/storage.js';
 import { formatRelativeTime, formatDate, initials, shortenId } from '../lib/formatters.js';
 
 const EIN_REGEX = /^\d{2}-\d{7}$/;
@@ -69,6 +72,13 @@ export function ConfiguracionScreen({ onToast }) {
         />
 
         <div className="col-span-4" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <IdentityVisualCard
+            church={church}
+            churchId={churchId}
+            canEdit={can('church.edit')}
+            onToast={onToast}
+            refreshChurch={refreshChurch}
+          />
           <LocaleCard
             church={church}
             churchId={churchId}
@@ -77,6 +87,14 @@ export function ConfiguracionScreen({ onToast }) {
           />
           <SubscriptionCard church={church} onToast={onToast} />
         </div>
+
+        <ReceiptCard
+          church={church}
+          churchId={churchId}
+          canEdit={can('church.edit')}
+          onToast={onToast}
+          refreshChurch={refreshChurch}
+        />
 
         <UsersCard
           churchId={churchId}
@@ -87,13 +105,6 @@ export function ConfiguracionScreen({ onToast }) {
         <StripeCard
           church={church}
           canConfig={can('stripe.config')}
-          onToast={onToast}
-        />
-
-        <ReceiptCard
-          church={church}
-          churchId={churchId}
-          canEdit={can('church.edit')}
           onToast={onToast}
           refreshChurch={refreshChurch}
         />
@@ -345,6 +356,62 @@ function LocaleButton({ active, onClick, disabled, emoji, label, sub }) {
 }
 
 // ============================================================
+// 2.b. Identidad visual (logo)
+// ============================================================
+function IdentityVisualCard({ church, churchId, canEdit, onToast, refreshChurch }) {
+  const handleUploaded = async ({ publicUrl, path }) => {
+    try {
+      // Si había logo previo, intentar borrarlo (best-effort).
+      const oldPath = pathFromPublicUrl(church.logo_url);
+      if (oldPath && oldPath !== path) {
+        await deleteChurchAsset(oldPath).catch(() => {});
+      }
+      await updateChurchLogoUrl(churchId, publicUrl);
+      await refreshChurch();
+      onToast({ title: 'Logo actualizado', sub: 'Sidebar y portal lo reflejan.' });
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'No se pudo guardar el logo', sub: e.message });
+    }
+  };
+
+  const handleRemove = async () => {
+    try {
+      const oldPath = pathFromPublicUrl(church.logo_url);
+      if (oldPath) await deleteChurchAsset(oldPath).catch(() => {});
+      await updateChurchLogoUrl(churchId, null);
+      await refreshChurch();
+      onToast({ title: 'Logo eliminado', sub: 'Se mostrarán iniciales.' });
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'No se pudo eliminar', sub: e.message });
+    }
+  };
+
+  return (
+    <div className="card">
+      <SettingHeader
+        icon="image"
+        title="Identidad visual"
+        desc="Logo que aparece en el sidebar y en el portal público."
+        compact
+      />
+      <div style={{ padding: '0 20px 20px' }}>
+        <AssetUploader
+          churchId={churchId}
+          kind="logo"
+          currentUrl={church.logo_url}
+          shape="circle"
+          disabled={!canEdit}
+          label={church.logo_url ? 'Cambiar logo' : 'Subir logo'}
+          helpText="Idealmente cuadrado (1:1). PNG o SVG con fondo transparente se ven mejor."
+          onUploaded={handleUploaded}
+          onRemove={church.logo_url ? handleRemove : undefined}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // 3. Suscripción
 // ============================================================
 function SubscriptionCard({ church, onToast }) {
@@ -365,7 +432,7 @@ function SubscriptionCard({ church, onToast }) {
     <div
       className="card"
       style={{
-        background: 'linear-gradient(135deg, #1F2B38, #2B3A4A)',
+        background: 'linear-gradient(135deg, #16307F, #1E3C94)',
         color: '#fff',
         borderColor: 'transparent',
       }}
@@ -375,7 +442,7 @@ function SubscriptionCard({ church, onToast }) {
           <div
             style={{
               width: 36, height: 36, borderRadius: 10,
-              background: 'rgba(184, 154, 122, 0.2)', color: '#B89A7A',
+              background: 'rgba(156, 192, 234, 0.2)', color: '#9CC0EA',
               display: 'grid', placeItems: 'center',
             }}
           >
@@ -423,7 +490,7 @@ function SubscriptionCard({ church, onToast }) {
 function UsersCard({ churchId, canManage, onToast }) {
   const [users, setUsers] = useState(null); // null = loading
   const [error, setError] = useState(null);
-  const [inviting, setInviting] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
 
   const load = async () => {
     try {
@@ -441,16 +508,13 @@ function UsersCard({ churchId, canManage, onToast }) {
     load();
   }, [churchId]);
 
-  const handleInviteStub = async () => {
-    setInviting(true);
-    await inviteUserStub({ email: '', role: 'secretary' });
-    setInviting(false);
+  const handleInviteSuccess = ({ email, role }) => {
+    setShowInvite(false);
     onToast({
-      tone: 'info',
-      icon: 'info',
-      title: 'Invitación pendiente',
-      sub: 'La invitación por email se conectará en una siguiente fase (Edge Function + Resend).',
+      title: 'Invitación enviada',
+      sub: `${email} recibirá un correo con el enlace de aceptación (rol: ${roleLabel(role)}).`,
     });
+    load();
   };
 
   const handleRoleChange = async (cu, newRole) => {
@@ -487,8 +551,8 @@ function UsersCard({ churchId, canManage, onToast }) {
         action={
           <button
             className="btn btn-sm btn-primary"
-            onClick={handleInviteStub}
-            disabled={!canManage || inviting}
+            onClick={() => setShowInvite(true)}
+            disabled={!canManage}
           >
             <Icon name="plus" size={12} /> Invitar usuario
           </button>
@@ -515,6 +579,149 @@ function UsersCard({ churchId, canManage, onToast }) {
             onToggleActive={handleToggleActive}
           />
         ))}
+      </div>
+      {showInvite && (
+        <InviteUserModal
+          churchId={churchId}
+          onClose={() => setShowInvite(false)}
+          onSuccess={handleInviteSuccess}
+          onToast={onToast}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Modal: Invitar usuario
+// ============================================================
+function InviteUserModal({ churchId, onClose, onSuccess, onToast }) {
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState('secretary');
+  const [fullName, setFullName] = useState('');
+  const [personId, setPersonId] = useState('');
+  const [people, setPeople] = useState([]);
+  const [peopleLoading, setPeopleLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Un 'servidor' debe vincularse a una ficha de persona. Cargamos la lista al elegir el rol.
+  useEffect(() => {
+    if (role !== 'servidor' || people.length || peopleLoading) return;
+    setPeopleLoading(true);
+    listPeople(churchId, { limit: 500 })
+      .then((rows) => setPeople(rows || []))
+      .catch(() => onToast({ tone: 'error', icon: 'alert', title: 'No se pudieron cargar las personas' }))
+      .finally(() => setPeopleLoading(false));
+  }, [role, churchId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const personName = (p) =>
+    (p.organization_name || `${p.first_name || ''} ${p.last_name || ''}`.trim() || p.email || '—');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!EMAIL_REGEX.test(email.trim())) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Email inválido' });
+      return;
+    }
+    if (role === 'servidor' && !personId) {
+      onToast({ tone: 'error', icon: 'alert', title: 'Elige a qué persona vincular el servidor' });
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await inviteUser({
+        email: email.trim().toLowerCase(),
+        role,
+        churchId,
+        fullName: fullName.trim() || null,
+        personId: role === 'servidor' ? personId : null,
+      });
+      onSuccess({ email: email.trim().toLowerCase(), role });
+    } catch (err) {
+      const msg = err.message || 'No se pudo enviar la invitación.';
+      const friendly =
+        msg.includes('admin puede invitar') ? 'Solo un admin puede invitar usuarios.' :
+        msg.includes('admin_role_blocked')   ? 'No se pueden invitar usuarios con rol admin desde aquí.' :
+        msg.includes('invitation_already_pending') ? 'Ya hay una invitación pendiente para ese correo.' :
+        msg.includes('user_already_exists')  ? 'Ese correo ya tiene una cuenta.' :
+        msg.includes('Email address')        ? 'El proveedor de email rechazó la dirección. Usa un dominio real.' :
+        msg;
+      onToast({ tone: 'error', icon: 'alert', title: 'No se envió la invitación', sub: friendly });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Invitar usuario</h3>
+          <button className="icon-btn" onClick={onClose} aria-label="Cerrar">
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div className="field">
+              <label>Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="persona@iglesia.org"
+                autoFocus
+                required
+              />
+            </div>
+            <div className="field">
+              <label>Nombre completo <span className="hint">(opcional)</span></label>
+              <input
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                placeholder="Nombre que aparecerá en el sistema"
+              />
+            </div>
+            <div className="field">
+              <label>Rol</label>
+              <select value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="pastor">Pastor</option>
+                <option value="treasurer">Tesorero</option>
+                <option value="secretary">Secretaria</option>
+                <option value="leader">Líder</option>
+                <option value="viewer">Lector</option>
+                <option value="servidor">Servidor (voluntario)</option>
+              </select>
+              <span className="hint">
+                {role === 'servidor'
+                  ? 'Un servidor solo ve “Mi servicio”, su equipo y el chat.'
+                  : 'El rol admin no se puede asignar desde aquí.'}
+              </span>
+            </div>
+            {role === 'servidor' && (
+              <div className="field">
+                <label>Vincular a persona</label>
+                <select value={personId} onChange={(e) => setPersonId(e.target.value)} required>
+                  <option value="">
+                    {peopleLoading ? 'Cargando personas…' : 'Selecciona una persona'}
+                  </option>
+                  {people.map((p) => (
+                    <option key={p.id} value={p.id}>{personName(p)}</option>
+                  ))}
+                </select>
+                <span className="hint">El servidor verá los servicios asignados a esta persona.</span>
+              </div>
+            )}
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="btn btn-secondary" onClick={onClose} disabled={submitting}>
+              Cancelar
+            </button>
+            <button type="submit" className="btn btn-primary" disabled={submitting || !email.trim()}>
+              {submitting ? 'Enviando…' : 'Enviar invitación'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -561,6 +768,9 @@ function UserRow({ cu, isFirst, canManage, onRoleChange, onToggleActive }) {
           <option value="secretary">Secretaria</option>
           <option value="leader">Líder</option>
           <option value="viewer">Lector</option>
+          {/* 'servidor' solo aparece para usuarios que ya lo son (se crean vía invitación
+              con persona vinculada); no se puede asignar desde aquí para evitar servidores sin ficha. */}
+          {cu.role === 'servidor' && <option value="servidor">Servidor</option>}
         </select>
       ) : (
         <Badge tone={tone}>{roleLabel(cu.role)}</Badge>
@@ -593,83 +803,217 @@ function UserRow({ cu, isFirst, canManage, onRoleChange, onToggleActive }) {
 // ============================================================
 // 5. Stripe
 // ============================================================
-function StripeCard({ church, canConfig, onToast }) {
-  const isConnected = !!church.stripe_account_id && church.stripe_charges_enabled;
-  const isPending = !!church.stripe_account_id && !church.stripe_charges_enabled;
+// Maps Stripe's technical requirement codes (e.g. "individual.ssn_last_4",
+// "external_account") to plain-Spanish labels a non-tech church admin understands.
+function friendlyRequirement(code) {
+  const c = String(code || '');
+  const map = [
+    [/external_account|bank/, 'Cuenta bancaria'],
+    [/ssn_last_4/, 'Últimos 4 dígitos del Seguro Social'],
+    [/id_number/, 'Número de identificación'],
+    [/verification\.(document|additional_document)/, 'Foto de tu identificación'],
+    [/dob/, 'Fecha de nacimiento'],
+    [/address/, 'Dirección'],
+    [/phone/, 'Teléfono'],
+    [/email/, 'Correo electrónico'],
+    [/first_name|last_name|\.name\b/, 'Nombre completo'],
+    [/tax_id|ein/, 'EIN / identificación fiscal'],
+    [/business_profile\.(url|product_description)/, 'Descripción o sitio web de tu iglesia'],
+    [/business_profile\.mcc/, 'Categoría de la organización'],
+    [/tos_acceptance/, 'Aceptar los términos de Stripe'],
+    [/owners|representative|relationship/, 'Datos del representante legal'],
+  ];
+  for (const [re, label] of map) if (re.test(c)) return label;
+  return c.replace(/_/g, ' ').replace(/\./g, ' › ');
+}
+
+function StripeCard({ church, canConfig, onToast, refreshChurch }) {
+  const [busy, setBusy] = useState(false);
+  const [abandoned, setAbandoned] = useState(false);
+  const connected = !!church.stripe_account_id && church.stripe_charges_enabled;
+  const started = !!church.stripe_account_id; // onboarding begun
+
+  // What Stripe still needs from the church before it can enable charges.
+  const requirements = church.stripe_requirements || {};
+  const currentlyDue = Array.isArray(requirements.currently_due) ? requirements.currently_due : [];
+  const missingLabels = [...new Set(currentlyDue.map(friendlyRequirement))];
+  const needsInfo = !connected && missingLabels.length > 0;                       // church must act
+  const reviewing = !connected && !needsInfo && church.stripe_details_submitted;  // Stripe is reviewing
+  const notFinished = started && !connected && !church.stripe_details_submitted;  // form left incomplete
+
+  // Coming back from Stripe's hosted onboarding → sync status (?stripe=done), or
+  // note that the form was left unfinished (?stripe=refresh).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('stripe') === 'done' && church.stripe_account_id) {
+      refreshStripeStatus(church.id).then(() => refreshChurch()).catch(() => {});
+    }
+    if (params.get('stripe') === 'refresh') setAbandoned(true);
+    if (params.has('stripe')) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('stripe');
+      window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleConnect = async () => {
+    setBusy(true);
+    try {
+      const { url } = await onboardStripe(church.id);
+      window.location.href = url; // Stripe-hosted onboarding
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'No se pudo iniciar la conexión', sub: e.message });
+      setBusy(false);
+    }
+  };
+
+  const handleDashboard = async () => {
+    setBusy(true);
+    try {
+      const { url } = await openStripeDashboard(church.id);
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'No se pudo abrir Stripe', sub: e.message });
+    } finally { setBusy(false); }
+  };
+
+  const handleRefresh = async () => {
+    setBusy(true);
+    try {
+      await refreshStripeStatus(church.id);
+      await refreshChurch();
+      onToast({ title: 'Estado actualizado' });
+    } catch (e) {
+      onToast({ tone: 'error', icon: 'alert', title: 'No se pudo actualizar', sub: e.message });
+    } finally { setBusy(false); }
+  };
+
+  const Check = ({ done, children }) => (
+    <div
+      role="img"
+      aria-label={`${done ? 'Completado' : 'Pendiente'}: ${typeof children === 'string' ? children : ''}`}
+      style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: done ? 'var(--text)' : 'var(--muted)' }}
+    >
+      <span aria-hidden="true" style={{
+        width: 18, height: 18, borderRadius: 999, flexShrink: 0, display: 'grid', placeItems: 'center',
+        background: done ? 'var(--success)' : 'var(--bg-2)', color: '#fff',
+        border: done ? 'none' : '1px solid var(--border)',
+      }}>
+        {done && <Icon name="check" size={11} />}
+      </span>
+      {children}
+    </div>
+  );
 
   return (
     <div className="card col-span-5">
       <SettingHeader
         icon="creditCard"
-        title="Stripe / Métodos de pago"
-        desc="Conexión con tu procesador de pagos."
+        title="Pagos / Métodos de pago"
+        desc="Recibe donaciones directo a la cuenta bancaria de tu iglesia."
         compact
+        action={
+          connected ? <Badge tone="success" dot>Activo</Badge>
+            : needsInfo ? <Badge tone="warning" dot>Acción requerida</Badge>
+            : reviewing ? <Badge tone="warning" dot>Revisando</Badge>
+            : started ? <Badge tone="warning" dot>Sin terminar</Badge>
+            : <Badge tone="muted">Sin conectar</Badge>
+        }
       />
-      <div style={{ padding: '0 24px 20px' }}>
-        <div
-          style={{
-            background: isConnected
-              ? 'var(--success-bg)'
-              : isPending
-              ? 'var(--warning-bg)'
-              : 'var(--bg-2)',
-            border: '1px solid var(--border-soft)',
-            borderRadius: 12,
-            padding: 14,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-          }}
-        >
-          <div
-            style={{
-              width: 40, height: 40, borderRadius: 10,
-              background: '#fff',
-              display: 'grid', placeItems: 'center',
-              color: '#635BFF', fontWeight: 800, fontSize: 14,
-            }}
-          >
-            S
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-              <span style={{ fontWeight: 700, fontSize: 13 }}>
-                {isConnected
-                  ? 'Cuenta Stripe conectada'
-                  : isPending
-                  ? 'Stripe en verificación'
-                  : 'Stripe no conectado'}
-              </span>
-              {isConnected && <Badge tone="success" dot>Conectado</Badge>}
-              {isPending && <Badge tone="warning" dot>Pendiente</Badge>}
-              {!church.stripe_account_id && <Badge tone="muted">Sin conectar</Badge>}
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-              {church.stripe_account_id
-                ? `${shortenId(church.stripe_account_id, 12)} · charges_enabled=${church.stripe_charges_enabled}`
-                : 'Conecta tu cuenta para recibir donaciones en línea.'}
-            </div>
-          </div>
-          <button
-            className="btn btn-sm btn-secondary"
-            onClick={() =>
-              onToast({
-                tone: 'info',
-                icon: 'info',
-                title: 'Stripe pendiente',
-                sub: 'Integración Stripe pendiente de activación (Fase futura).',
-              })
-            }
-            disabled={!canConfig}
-          >
-            {isConnected ? 'Gestionar' : 'Conectar Stripe'}
-          </button>
-        </div>
+      <div style={{ padding: '0 24px 22px' }}>
 
-        <p style={{ marginTop: 14, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
-          La activación de Stripe (Connect, webhooks, métodos de pago) se completa en una fase posterior.
-          El estado mostrado proviene directamente de la base de datos.
-        </p>
+        {!started && (
+          <>
+            <p style={{ fontSize: 12.5, color: 'var(--eb-ink-soft, var(--text))', lineHeight: 1.55, margin: '0 0 14px' }}>
+              Conecta tu cuenta bancaria con Stripe para empezar a recibir donaciones en línea.
+              Stripe verifica tu identidad y tu banco de forma segura — toma unos 5 minutos y no
+              necesitas conocimientos técnicos. Las donaciones llegan <strong>directo a tu iglesia</strong>.
+            </p>
+            <button className="btn btn-primary" onClick={handleConnect} disabled={!canConfig || busy}>
+              <Icon name="creditCard" size={14} /> {busy ? 'Abriendo…' : 'Conectar mi cuenta bancaria'}
+            </button>
+            <p style={{ marginTop: 10, fontSize: 11, color: 'var(--muted)' }}>
+              Se abre el formulario seguro de Stripe. Podrás volver aquí al terminar.
+            </p>
+          </>
+        )}
+
+        {started && (
+          <>
+            {abandoned && !connected && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: 'var(--warning-bg)', border: '1px solid #F0DCC2', color: 'var(--warning)', borderRadius: 10, padding: '10px 12px', marginBottom: 14, fontSize: 12.5, lineHeight: 1.5 }}>
+                <Icon name="info" size={14} />
+                <span>Saliste del formulario de Stripe sin terminar. No pasa nada — puedes continuar cuando quieras con el botón de abajo.</span>
+              </div>
+            )}
+
+            {needsInfo && (
+              <div style={{ background: 'var(--warning-bg)', border: '1px solid #F0DCC2', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 13, color: 'var(--warning)', marginBottom: 8 }}>
+                  <Icon name="alert" size={15} /> Stripe necesita un poco más de información
+                </div>
+                <p style={{ margin: '0 0 8px', fontSize: 12.5, color: 'var(--text)', lineHeight: 1.5 }}>
+                  Para activar las donaciones, completa estos datos:
+                </p>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: 'var(--text)', display: 'grid', gap: 4 }}>
+                  {missingLabels.map((l) => <li key={l}>{l}</li>)}
+                </ul>
+              </div>
+            )}
+
+            {reviewing && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: 'var(--bg)', border: '1px solid var(--border-soft)', borderRadius: 12, padding: 14, marginBottom: 14, fontSize: 12.5, color: 'var(--text)', lineHeight: 1.5 }}>
+                <Icon name="clock" size={15} />
+                <span>Enviaste tus datos y Stripe los está revisando — suele tardar unos minutos. Pulsa “Actualizar estado” en un momento para ver si ya quedó lista.</span>
+              </div>
+            )}
+
+            {notFinished && !needsInfo && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: 'var(--bg)', border: '1px solid var(--border-soft)', borderRadius: 12, padding: 14, marginBottom: 14, fontSize: 12.5, color: 'var(--text)', lineHeight: 1.5 }}>
+                <Icon name="info" size={15} />
+                <span>Empezaste la conexión pero falta terminar el formulario de Stripe. Continúa cuando estés listo.</span>
+              </div>
+            )}
+
+            <div style={{
+              background: 'var(--bg)', border: '1px solid var(--border-soft)', borderRadius: 12,
+              padding: 14, display: 'grid', gap: 9, marginBottom: 10,
+            }}>
+              <Check done={church.stripe_details_submitted}>Identidad y datos enviados</Check>
+              <Check done={church.stripe_charges_enabled}>Cuenta lista para recibir donaciones</Check>
+              <Check done={church.stripe_payouts_enabled}>Depósitos a tu banco habilitados</Check>
+            </div>
+            <p style={{ margin: '0 0 14px', fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+              Los tres pasos deben estar marcados para empezar a recibir donaciones. Stripe los habilita uno a uno a medida que verifica tu información.
+            </p>
+
+            {connected ? (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-sm btn-secondary" onClick={handleDashboard} disabled={!canConfig || busy}>
+                  <Icon name="creditCard" size={13} /> Administrar en Stripe
+                </button>
+                <button className="btn btn-sm btn-ghost" onClick={handleRefresh} disabled={busy}>
+                  <Icon name="refresh" size={13} /> {busy ? 'Comprobando…' : 'Actualizar estado'}
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-sm btn-primary" onClick={handleConnect} disabled={!canConfig || busy}>
+                  <Icon name="arrowRight" size={13} /> {busy ? 'Abriendo…' : (needsInfo ? 'Completar mis datos' : 'Continuar verificación')}
+                </button>
+                <button className="btn btn-sm btn-ghost" onClick={handleRefresh} disabled={busy}>
+                  <Icon name="refresh" size={13} /> {busy ? 'Comprobando…' : 'Actualizar estado'}
+                </button>
+              </div>
+            )}
+
+            <p style={{ marginTop: 12, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+              {connected
+                ? 'Aceptas tarjeta, Apple Pay y Google Pay. Las donaciones se depositan en tu banco automáticamente (Stripe cobra su comisión estándar). Administra más métodos desde tu panel de Stripe.'
+                : 'Tu información viaja cifrada directo a Stripe; nosotros nunca vemos tus datos bancarios.'}
+            </p>
+          </>
+        )}
       </div>
     </div>
   );
@@ -747,20 +1091,9 @@ function ReceiptCard({ church, churchId, canEdit, onToast, refreshChurch }) {
               >
                 {!church.logo_url && churchLogoInitials}
               </div>
-              <button
-                className="btn btn-sm btn-secondary"
-                onClick={() =>
-                  onToast({
-                    tone: 'info',
-                    icon: 'info',
-                    title: 'Upload pendiente',
-                    sub: 'La subida de logo requiere Supabase Storage (Fase 8 con portal).',
-                  })
-                }
-                disabled={!canEdit}
-              >
-                <Icon name="upload" size={12} /> Cambiar logo
-              </button>
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+                El logo se administra en la sección <strong>"Identidad visual"</strong> arriba.
+              </span>
             </div>
           </div>
           <div className="field">

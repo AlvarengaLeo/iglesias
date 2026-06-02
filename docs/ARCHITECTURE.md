@@ -425,3 +425,177 @@ Policies:
 | Multi-idioma | i18n con react-intl + columna `locale` |
 | Multi-currency | Currency rates table + conversion helpers |
 | Mobile native | React Native compartiendo capa `api/` |
+
+---
+
+## 11. Fase 13 — Hardening (2026-05-27)
+
+### 11.1 Portal público endurecido
+
+Antes de Fase 13, las policies anon de `churches`, `campaigns` y `service_times` eran demasiado abiertas: un cliente anónimo podía enumerar TODAS las iglesias (con EIN, dirección, teléfono), todas las campañas visibles activas y todos los horarios — sin filtrar por slug. Cross-tenant leak moderado.
+
+**Decisión**: toda la lectura pública pasa por una sola RPC `rpc_public_portal_by_slug(p_slug)` y las policies anon directas se eliminan o se endurecen.
+
+- `churches_select_anon` → **eliminada**. Anon ya no puede `SELECT * FROM churches`.
+- `campaigns_select_anon` → ahora exige `EXISTS (portal_settings publicado para esa church)`.
+- `service_times_select_anon` → mismo filtro.
+- `portal_settings_select_anon` → ya filtraba por `publish_status='published'`, no cambia.
+
+La RPC `rpc_public_portal_by_slug`:
+- Recibe el slug del cliente público.
+- Resuelve el `church_id` y verifica que `portal_settings.publish_status='published'`.
+- Devuelve un solo JSONB con los campos publishable (sin EIN, sin address detallada, sin email/teléfono internos).
+- Si la iglesia no existe o no está publicada → devuelve `NULL` (PostgREST devuelve 200 con body `null`).
+
+`src/api/portal.js → getPublicPortalBySlug(slug)` ahora hace UNA llamada en lugar de 4.
+
+### 11.2 Dashboard real-time
+
+Antes: `mv_church_monthly_donations` (materialized view) — requería `pg_cron` para mantener fresh, que no estaba agendado.
+
+Después: `rpc_monthly_donations_series(p_church_id, p_months_back)` calcula en tiempo real con `date_trunc('month', ...)`. Con el volumen actual (~30 donaciones) corre en <10 ms. Escala bien hasta ~100k.
+
+La mv queda en la base pero **deja de consultarse desde el frontend** (queda como fallback no-mantenido). Si en el futuro el dataset crece y la RPC se vuelve lenta, se puede reactivar la mv + refresh agendado.
+
+### 11.3 Storage bucket `church-assets`
+
+Bucket público (sin signed URLs) usado para:
+- Logos de iglesia (`{church_id}/logo/...`)
+- Imágenes hero del portal (`{church_id}/hero/...`)
+- Firmas de recibos (`{church_id}/signature/...`)
+
+Policies:
+- `SELECT` público — necesario porque el portal anónimo carga `<img src="...">` sin auth.
+- `INSERT/UPDATE/DELETE` solo autenticado y solo si el primer segmento del path (`storage.foldername(name)[1]`) coincide con un `church_id` del caller. Esto bloquea cross-tenant writes a nivel de Storage.
+
+**Decisión clave**: los PDFs de recibos NO van a este bucket. Cuando se generen server-side irán a un bucket separado `church-receipts-private` con `public=false` y signed URLs de corta duración. Mezclar contenido público (logos) con privado (recibos) en un mismo bucket público sería un riesgo.
+
+### 11.4 Invite-user via Edge Function (sin Resend)
+
+Supabase Auth tiene SMTP nativo que envía emails de invitación cuando se llama `auth.admin.inviteUserByEmail()`. No requiere Resend para el flujo de invitación. Por eso la Edge Function `invite-user` queda completa y funcional sin secrets adicionales.
+
+El flujo:
+1. Frontend llama `supabase.functions.invoke('invite-user', { email, role, church_id })`.
+2. Edge Function valida JWT del caller, valida que sea admin, valida role whitelist.
+3. Inserta `church_invitations` row.
+4. Llama `supabase.auth.admin.inviteUserByEmail()` con `data: {invitation_token, church_id, role}`.
+5. Supabase Auth envía el email con link a `/#accept-invite?token=...`.
+6. El invitee acepta → el trigger `on_auth_user_created` lee el `invitation_token` del metadata y lo vincula automáticamente a `church_users`.
+
+Si Supabase Auth rechaza el email (dominio inválido tipo `example.com`), la Edge Function auto-revoca la invitación huérfana antes de devolver el error.
+
+### 11.5 Email de recibos — explícitamente diferido
+
+La Fase 13 omitió la Edge Function `send-receipt-email` con Resend por decisión del usuario. El comportamiento actual:
+- `rpc_resend_receipt` sigue insertando filas en `receipt_deliveries` con `status='queued'`.
+- Frontend ofrece descarga de PDF cliente-side (jsPDF) como alternativa.
+- Para activar email cuando se quiera: implementar la Edge Function + setear `RESEND_API_KEY` (u otro proveedor) via `supabase secrets set`.
+
+---
+
+## 12. Donation Intent Flow (Fase 14)
+
+Ver `docs/DONATION_FLOW.md` para el detalle completo. Resumen arquitectónico:
+
+### 12.1 Separación intent / donation / receipt
+
+```
+visitante anónimo                     admin                         IRS
+─────────────────                     ─────                         ───
+[DonationModal]                                                       │
+    │ rpc_create_public_donation_intent (anon)                        │
+    ▼                                                                 │
+donation_intents (pending_payment)                                    │
+    │                                                                 │
+    │ ┌───────── admin recibe pago externo ──────────┐                │
+    ▼ ▼                                                               │
+[RegisterDonationModal pre-llenado]                                   │
+    │ rpc_register_donation (auth)                                    │
+    ▼                                                                 │
+donations (paid)  ──────►  contribution_receipts  ──────► PDF/email   │
+    │                                                                 │
+    │ rpc_link_intent_to_donation                                     │
+    ▼                                                                 │
+donation_intents.status='completed', donation_id=NEW
+```
+
+Mismo patrón conceptual que **Stripe PaymentIntent → Charge → Receipt**. Permite a un visitante anónimo dejar registro de intención sin tocar las tablas financieras ni los reportes.
+
+### 12.2 Por qué tabla nueva (no extender `donations`)
+
+- `donations_insert` policy exige role admin/pastor/treasurer — anon nunca podría insertar.
+- `donations.payment_status` no incluye `pending_intent`; agregarlo polucionaría todos los `WHERE payment_status='paid'` de reportes.
+- Triggers de audit en `donations` se dispararían por cada intent → ruido.
+- `contribution_receipts.donation_id` es NOT NULL — un intent no debe llevar receipt fiscal.
+
+### 12.3 Capa pública: RPC SECURITY DEFINER (no Edge Function)
+
+Anon llama `rpc_create_public_donation_intent`:
+- Toda la validación corre server-side en PostgreSQL.
+- Anon NUNCA toca la tabla directamente (`intents_no_insert` policy lo bloquea).
+- Honeypot + rate limit + email regex + monto sanity en el SQL.
+- Cero secrets en el frontend.
+- Sin deploy de Edge Function — sin cold start.
+
+La Edge Function entra cuando se wire Stripe: `create-donation-checkout` necesita el `STRIPE_SECRET_KEY` y debe llamar al API de Stripe. Sin Stripe, no aporta valor.
+
+### 12.4 Stripe-ready columns en `donation_intents`
+
+Las columnas `provider`, `provider_checkout_session_id` (UNIQUE), `provider_payment_intent_id` (UNIQUE), `provider_subscription_id`, `provider_customer_id`, `provider_redirect_url` están en el schema desde el día 1 — null hasta wirear Stripe. **Sin ALTER TABLE futuro**.
+
+### 12.5 Conversión intent → donation
+
+Acción admin explícita (nunca automática). El modal `RegisterDonationModal` existente recibe ahora un prop `initial` que pre-llena monto, fondo, campaña, frecuencia, email, notas. Admin elige método de pago (efectivo/cheque/etc.) y submita. Tras el `rpc_register_donation` exitoso, se llama `rpc_link_intent_to_donation(intent_id, donation_id)` que enlaza la intención.
+
+`rpc_register_donation` **no se modificó**. La vinculación es un paso independiente y opcional.
+
+### 12.6 Campaign progress: solo donations confirmadas
+
+`vw_campaign_progress` filtra `WHERE d.payment_status='paid'` — intents NO suman a progreso. El interés pendiente por campaña se obtiene aparte vía `getPendingIntentsByCampaign(churchId)` (helper en `src/api/donationIntents.js`, no usado en el dashboard por defecto).
+
+### 12.7 UI pública: single-page form con sticky summary
+
+Decisión UX: la mejor práctica de conversión (Donorbox, CauseVox, GoFundMe) es 1-page con resumen sticky, no wizard. Implementado en `src/public/DonationModal.jsx` + `DonationForm.jsx` + `DonationThanks.jsx`. Mobile-first con summary que se vuelve barra inferior en viewports < 768px.
+
+Lenguaje deliberado: "aporte", "contribución", "comprobante", "generosidad". Nunca "compra/factura/checkout/customer".
+
+---
+
+## 13. Portal de contenido — presencia de iglesia (Fase 15)
+
+Expande el portal público de una landing única a un sitio **híbrido** (Home rico + páginas dedicadas de archivo) con 4 módulos de contenido nuevos. Toda la UI del portal público y la pantalla admin nueva están en **inglés** (el CRM admin sigue en español — migración a inglés pendiente como esfuerzo aparte).
+
+### 13.1 Módulos y tablas nuevas
+
+`sermons`, `events`, `podcast_episodes`, `projects` (ministries/projects). Spine común (convención `funds`/`campaigns`): `church_id` (ON DELETE RESTRICT), `is_visible_on_portal`, `sort_order`, `created_by`, `deleted_at` (soft-delete), trigger `set_updated_at` + `audit_changes`. Migraciones `20260602120001..06`.
+
+**Media embebida externamente** (YouTube/Vimeo/Spotify/Apple) — se guardan solo URLs, nunca archivos. Solo thumbnails/covers/imágenes van al bucket `church-assets` (kinds nuevos: `sermon_thumb`, `event_image`, `podcast_cover`, `project_image`).
+
+### 13.2 Seguridad
+
+RLS por tabla idéntica a `campaigns`: SELECT para miembros, ALL para `admin/pastor/secretary`. **Cero acceso anon directo** — toda lectura pública pasa por RPCs `SECURITY DEFINER` que validan `publish_status='published'` + `is_visible_on_portal` por fila y whitelistean columnas:
+- `rpc_public_sermons_by_slug(slug, limit, offset, series)` — archivo paginado + lista de series.
+- `rpc_public_sermon_by_id(slug, id)` — detalle (deep-link).
+- `rpc_public_podcast_by_slug(slug, limit, offset)` — archivo paginado.
+- `rpc_public_events_by_slug(slug)` / `rpc_public_projects_by_slug(slug)` — listados completos.
+- `rpc_public_portal_by_slug` **extendido** (nuevo CREATE OR REPLACE) con teasers para el Home: `latestSermons` (3), `upcomingEvents` (4), `featuredProjects` (6), `latestPodcast` (3).
+
+Util anti-XSS `src/lib/embed.js`: whitelist de hosts + regex de ID + **reconstrucción** del `src` canónico (nunca pasa la URL cruda al iframe). `isSafeExternalUrl()` valida links `<a>` (registration_url / link_url).
+
+### 13.3 Frontend público (`src/public/`)
+
+Routing hash zero-dep (`router.js`, mismo patrón que `App.jsx`): `#/`, `#/sermons`, `#/sermon/:id`, `#/podcast`, `#/events`, `#/ministries`. El `slug` vive en `?slug=` y se preserva (solo cambia el hash). `PortalApp.jsx` = shell (fetch + DonationModal único + Nav + Footer + router). `HomePage.jsx` compone las secciones; páginas dedicadas hacen fetch lazy vía `src/api/portalContent.js`. Estética "warm-minimal" elevada (tokens `--pp-*` + Manrope, eyebrow labels, cards refinadas). Nav con hamburger móvil.
+
+### 13.4 Admin CMS
+
+Pantalla `src/screens/WebsiteContentScreen.jsx` (ruta `#contenido`, label "Contenido web") con tabs **Sermons/Events/Podcast/Ministries**: tablas + modales create/edit + toggles inline de visibilidad/featured + `AssetUploader` para imágenes. Permiso `content.write` (`admin/pastor/secretary`). API admin: `src/api/{sermons,events,podcast,projects}.js`.
+
+### 13.5 Textos editables de la home (Fase 20)
+
+Tras el rediseño "Casa de Restauración" (Fase 18) los rótulos editoriales de la home (eyebrow/título/lead de cada sección + las 3 tarjetas de "Plan Your Visit" + el bloque Give) quedaron en código. Para hacerlos editables se agregó:
+
+- **`src/lib/homeCopyDefaults.js`** — `HOME_COPY_DEFAULTS` (única fuente de verdad de los textos por defecto, agrupados por sección) + `mergeHomeCopy(home)` (deep-merge por campo; un valor ausente/vacío cae al default). Lo consumen tanto `HomePage.jsx` (fallback al renderizar) como el editor admin (placeholders), por lo que **nunca divergen**.
+- **`HomePage.jsx`** — lee `mergeHomeCopy(published.home)` y usa `copy.<grupo>.<campo>` en lugar de literales. Con `home` vacío la página se ve idéntica (backward-compatible).
+- **`Portal.jsx`** — nueva sección `{ id:'home', label:'Textos de la home' }` + `HomeTextsEditor` (patrón `AboutEditor`), guarda en `draft.home.<grupo>.<campo>`.
+
+**No requirió migración:** `rpc_public_portal_by_slug` devuelve el blob `published_data` completo (pass-through) y `saveDraft`/`rpc_publish_portal` copian el JSONB entero sin whitelist, así que la nueva key `published_data.home` llega sola al portal público. Lo que **sigue** viniendo de sus propias keys (no se duplica): hero título/mensaje/imagen (`hero.*`), pill/headline/story de Welcome (`about.*`), label del botón de donar (`donations.button_text`). Verbos de botones y chrome de nav/footer quedan como UI fija.

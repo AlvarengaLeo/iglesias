@@ -4,14 +4,38 @@ import { useAuth } from './AuthContext.jsx';
 
 const ChurchContext = createContext(null);
 
-// Extract the supabase fetch into a reusable function so refresh() can call it
-// without duplicating logic.
+const REST_URL = import.meta.env.VITE_SUPABASE_URL + '/rest/v1';
+const APIKEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
+// Direct REST fetch with cache:'no-store' para evitar que el navegador
+// devuelva una versión vieja del row tras un update reciente (logo upload, etc.).
+// PostgREST no envía Cache-Control y los browsers cachean por heurística →
+// stale state después de mutations.
 async function fetchMemberships(userId) {
-  return supabase
-    .from('church_users')
-    .select('church_id, role, full_name, churches(*)')
-    .eq('user_id', userId)
-    .eq('is_active', true);
+  const { data: sess } = await supabase.auth.getSession();
+  const jwt = sess?.session?.access_token;
+  if (!jwt) return { data: [], error: null };
+
+  const url = `${REST_URL}/church_users?select=id,church_id,role,person_id,full_name,churches(*)&user_id=eq.${userId}&is_active=eq.true`;
+  try {
+    const r = await fetch(url, {
+      cache: 'no-store',
+      headers: {
+        apikey: APIKEY,
+        Authorization: `Bearer ${jwt}`,
+        'X-Client-Info': 'iglesia-crm',
+        Accept: 'application/json',
+      },
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      return { data: null, error: { message: txt || `HTTP ${r.status}` } };
+    }
+    const data = await r.json();
+    return { data, error: null };
+  } catch (e) {
+    return { data: null, error: e };
+  }
 }
 
 export function ChurchProvider({ children }) {
@@ -89,6 +113,8 @@ export function ChurchProvider({ children }) {
         church,
         churchId: currentChurchId,
         role,
+        churchUserId: currentMembership?.id || null,
+        personId: currentMembership?.person_id || null,
         loading,
         switchChurch,
         refreshChurch,

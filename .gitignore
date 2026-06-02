@@ -8,6 +8,8 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+# MS Office owner/lock temp files (~$Document.docx)
+~$*
 
 # Editor
 .vscode/
